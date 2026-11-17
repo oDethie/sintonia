@@ -22,7 +22,7 @@ O controle de volume do Windows esconde o que mais importa: trocar a saída (fon
 - **Saída de cada app:** arraste o app para outra saída, ou use o **⋯** / clique direito no app. A escolha é **garantida**: se o Windows "esquecer", o Sintonia coloca o app de volta na saída certa.
 - **Usar como padrão** com um botão próprio (sem trocar por engano). A saída padrão tem uma barrinha discreta na lateral.
 - **Organize do seu jeito:** arraste as saídas para mudar a ordem, recolha/expanda com a setinha, renomeie ("Fone", "Caixa", "Monitor") e esconda o que não usa (o olhinho mostra os escondidos).
-- **Perfis** (opcional, até 10): guardam a saída padrão, o microfone, a saída e o volume de cada app e como o painel está. Troque por botões, pelo menu do ícone ou por atalho. Podem **ativar sozinhos** quando um app (ex.: um jogo) começa a tocar e voltar ao anterior quando ele fecha.
+- **Perfis** (opcional, até 10): guardam a saída padrão, o microfone, a saída e o volume de cada app e como o painel está. Troque pelos botões do painel (numa linha só; os que não cabem ficam no botão **+N**), pelo menu do ícone ou por atalho. Podem **ativar sozinhos** quando um app (ex.: um jogo) começa a tocar e voltar ao anterior quando ele fecha.
 - **Atalhos de teclado** configuráveis: abrir o painel, próxima saída, mudo geral e um por perfil.
 - **Aviso na tela** discreto ao usar os atalhos (não aparece por cima de jogos em tela cheia).
 - **Som tocando** (opcional): barrinhas animadas ao lado de cada saída e app mostram o som que está tocando, só com o painel aberto.
@@ -66,7 +66,7 @@ Para mudar o som do notebook pelo painel do PC (ou o contrário):
 
 1. No PC que **vai ser controlado**: Configurações ▸ Outros PCs ▸ ligue **Pode ser controlado** e clique em **Gerar código**. Na primeira vez o Windows pergunta se libera o Sintonia na rede: marque só **Redes privadas**.
 2. No PC que **vai controlar**: Configurações ▸ Outros PCs ▸ ligue **Controlar outros PCs**, clique em **Adicionar um PC**, escolha o PC e digite o código (8 letras e números, vale 2 minutos). Se ele não aparecer na lista, use **Digitar o endereço do PC…** com o endereço mostrado no outro PC, logo abaixo de "Pode ser controlado".
-3. Pronto: o painel mostra um botão **Este PC** e um com o nome do outro PC. Clique nele para ver e mudar as saídas, os volumes, o mudo e a saída de cada app de lá.
+3. Pronto: o topo do painel ganha uma barra com **Este PC** e o nome do outro PC (até 2 outros PCs). Clique no outro para ver e mudar as saídas, os volumes, o mudo e a saída de cada app de lá. Os perfis são deste PC e só aparecem em "Este PC".
 
 Cada PC pode ser controlador, controlado ou os dois, e dá para trocar quando quiser. Tudo vem **desligado**.
 
