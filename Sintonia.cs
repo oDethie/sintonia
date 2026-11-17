@@ -19,8 +19,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.0.2.0")]
-[assembly: AssemblyFileVersion("1.0.2.0")]
+[assembly: AssemblyVersion("1.0.3.0")]
+[assembly: AssemblyFileVersion("1.0.3.0")]
 
 static class Program
 {
@@ -2447,10 +2447,12 @@ class Painel : Form
                 direita -= tw + E(8);
             }
             int nomeW = Math.Max(E(20), direita - xTexto);
-            int nw = Math.Min(nomeW, TextRenderer.MeasureText(g, d.Nome, fNegrito, Size.Empty, TextFormatFlags.NoPadding).Width);
-            TextRenderer.DrawText(g, d.Nome, d.Padrao ? fNegrito : fNormal, new Rectangle(xTexto, r1.Y, nomeW, r1.Height), cTexto, TF);
+            bool comSom = app.MostrarSom && d.Medidor != null;
+            int nomeVis = Math.Max(E(20), nomeW - (comSom ? LarguraMed() + E(14) : 0));
+            int nw = Math.Min(nomeVis, TextRenderer.MeasureText(g, d.Nome, fNegrito, Size.Empty, TextFormatFlags.NoPadding).Width);
+            TextRenderer.DrawText(g, d.Nome, d.Padrao ? fNegrito : fNormal, new Rectangle(xTexto, r1.Y, nomeVis, r1.Height), cTexto, TF);
             int xm = xTexto + nw + E(10);
-            if (app.MostrarSom && d.Medidor != null && nomeW - nw > LarguraMed() + E(12))
+            if (comSom)
             {
                 Medidor(g, xm, r1.Y + r1.Height / 2, hovCab ? cHover : cCartao, "d|" + d.Id, d.Medidor, null);
                 xm += LarguraMed() + E(4);
@@ -2557,7 +2559,7 @@ class Painel : Form
         }
 
         // nome + alfinete quando o app tem uma saida so dele
-        int nomeMax = rMais.Left - xTexto - E(22);
+        int nomeMax = rMais.Left - xTexto - E(22) - (app.MostrarSom && a.Medidores.Count > 0 ? LarguraMed() + E(12) : 0);
         int nw = Math.Min(nomeMax, TextRenderer.MeasureText(g, a.Nome, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width);
         TextRenderer.DrawText(g, a.Nome, fNormal, new Rectangle(xTexto, y + E(3), nomeMax, E(24)), a.Ativo ? cTexto : cFraco, TF);
         if (a.Saida != null)
