@@ -25,6 +25,7 @@ O controle de volume do Windows esconde o que mais importa: trocar a saída (fon
 - **Perfis** (opcional, até 10): guardam a saída padrão, o microfone, a saída e o volume de cada app e como o painel está. Troque por botões, pelo menu do ícone ou por atalho. Podem **ativar sozinhos** quando um app (ex.: um jogo) começa a tocar e voltar ao anterior quando ele fecha.
 - **Atalhos de teclado** configuráveis: abrir o painel, próxima saída, mudo geral e um por perfil.
 - **Aviso na tela** discreto ao usar os atalhos (não aparece por cima de jogos em tela cheia).
+- **Som tocando** (opcional): barrinhas animadas ao lado de cada saída e app mostram o som que está tocando, só com o painel aberto.
 - **Tema claro/escuro** que segue o Windows, cantos arredondados, animações suaves (opcionais).
 - Funciona com monitores em **escalas diferentes** (ex.: 100% e 175%) e com a **barra de tarefas** fixa, que se esconde sozinha ou em qualquer lado da tela.
 - **Configurações** numa janela própria (Geral, Perfis, Atalhos, Dispositivos), com tudo podendo ser ligado ou desligado.

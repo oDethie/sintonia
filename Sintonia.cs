@@ -19,8 +19,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.0.2.0")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
 
 static class Program
 {
@@ -323,6 +323,13 @@ interface IAudioSessionControl2
     [PreserveSig] int SetDuckingPreference([MarshalAs(UnmanagedType.Bool)] bool b);
 }
 
+// Medidor do Windows: nivel do som que esta tocando agora (0 a 1)
+[ComImport, Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioMeterInformation
+{
+    [PreserveSig] int GetPeakValue(out float pico);
+}
+
 [ComImport, Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface ISimpleAudioVolume
 {
@@ -383,6 +390,7 @@ class Disp
     public bool Padrao, Mudo;
     public float Vol;
     public IAudioEndpointVolume Ep;
+    public IAudioMeterInformation Medidor;
     public List<GrupoApp> Apps = new List<GrupoApp>();
 }
 
@@ -394,6 +402,7 @@ class GrupoApp
     public List<ISimpleAudioVolume> Vols = new List<ISimpleAudioVolume>();
     public List<uint> Pids = new List<uint>();
     public List<object> Rcws = new List<object>();
+    public List<IAudioMeterInformation> Medidores = new List<IAudioMeterInformation>();
 }
 
 class Perfil
@@ -422,6 +431,8 @@ static class Audio
     }
     public static Guid IID_EP = new Guid("5CDF2C82-841E-4546-9722-0CF74078229A");
     public static Guid IID_SM2 = new Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F");
+    public static Guid IID_MEDIDOR = new Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064");
+    public static bool ComMedidor;   // so pega os medidores quando a animacao esta ligada
     public static Guid Ctx = Guid.NewGuid();
 
     static readonly Guid PK_DEV = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0");
@@ -510,6 +521,11 @@ static class Audio
                     x.Ep.GetMasterVolumeLevelScalar(out x.Vol);
                     x.Ep.GetMute(out x.Mudo);
                 }
+                if (ComMedidor)
+                {
+                    object om;
+                    if (d.Activate(ref IID_MEDIDOR, 23, IntPtr.Zero, out om) == 0 && om != null) x.Medidor = (IAudioMeterInformation)om;
+                }
                 if (comApps && fluxo == 0) LerApps(d, x, inativos, filtrar);
                 l.Add(x);
             }
@@ -563,6 +579,7 @@ static class Audio
                     if (vol != null && vol.GetMasterVolume(out v) == 0) g.Vol = v;
                 }
                 if (vol != null) { g.Vols.Add(vol); if (vol.GetMute(out m) == 0) g.Mudo = g.Mudo && m; }
+                if (ComMedidor) { var med = s as IAudioMeterInformation; if (med != null) g.Medidores.Add(med); }
                 if (st == 1) g.Ativo = true;
                 if (pid != 0 && !g.Pids.Contains(pid)) g.Pids.Add(pid);
                 g.Rcws.Add(s);
@@ -600,7 +617,8 @@ static class Audio
         foreach (var d in l)
         {
             Soltar(d.Ep); d.Ep = null;
-            foreach (var g in d.Apps) { foreach (var r in g.Rcws) Soltar(r); g.Rcws.Clear(); g.Vols.Clear(); }
+            Soltar(d.Medidor); d.Medidor = null;
+            foreach (var g in d.Apps) { foreach (var r in g.Rcws) Soltar(r); g.Rcws.Clear(); g.Vols.Clear(); g.Medidores.Clear(); }
         }
         l.Clear();
     }
@@ -1757,6 +1775,7 @@ class Painel : Form
             if (++ticks % 4 == 0) Recarregar(); else AtualizarValores();
         };
         tAnim.Tick += (s, e) => PassoAnimacao();
+        tSom.Tick += (s, e) => PassoSom();
     }
 
     protected override CreateParams CreateParams
@@ -1899,6 +1918,7 @@ class Painel : Form
         Activate();
         tRecarregar.Start();
         if (app.Animacoes) Animar();
+        if (app.MostrarSom) tSom.Start();
     }
 
     void Posicionar()
@@ -1925,9 +1945,101 @@ class Painel : Form
         if (!fechando || !app.Animacoes) EsconderAgora();
     }
 
+    // ---- barrinhas animadas do som que esta tocando (so com o painel aberto e a opcao ligada) ----
+    class Med { public Rectangle R; public Color Fundo; public string Chave; public IAudioMeterInformation M; public List<IAudioMeterInformation> Ms; }
+    readonly List<Med> meds = new List<Med>();
+    readonly Dictionary<string, float[]> historico = new Dictionary<string, float[]>();
+    readonly Timer tSom = new Timer { Interval = 40 };   // 25 quadros por segundo
+    const int BARRAS = 5;
+
+    int LarguraMed() { return BARRAS * E(3) + (BARRAS - 1) * E(2); }
+
+    // registra (e desenha) as barrinhas de uma linha
+    void Medidor(Graphics g, int x, int yCentro, Color fundo, string chave, IAudioMeterInformation m, List<IAudioMeterInformation> ms)
+    {
+        if (!app.MostrarSom || g == null || (m == null && (ms == null || ms.Count == 0))) return;
+        var md = new Med { R = new Rectangle(x, yCentro - E(8), LarguraMed(), E(16)), Fundo = fundo, Chave = chave, M = m, Ms = ms };
+        meds.Add(md);
+        DesenharMed(g, md);
+    }
+
+    void DesenharMed(Graphics g, Med md)
+    {
+        float[] h;
+        if (!historico.TryGetValue(md.Chave, out h)) h = new float[BARRAS];
+        using (var b = new SolidBrush(md.Fundo)) g.FillRectangle(b, md.R);
+        bool silencio = true;
+        foreach (var v in h) if (v > 0.02f) silencio = false;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var b = new SolidBrush(silencio ? Color.FromArgb(120, cFraco) : cAcento))
+            for (int i = 0; i < BARRAS; i++)
+            {
+                // escala em decibeis (como medidores de audio): -50 dB = vazio, 0 dB = cheio
+                float nivel = h[i] <= 0.0003f ? 0f : Math.Max(0f, Math.Min(1f, 1f + 20f * (float)Math.Log10(h[i]) / 50f));
+                float alt = Math.Max(E(2), nivel * md.R.Height);
+                var r = new RectangleF(md.R.X + i * (E(3) + E(2)), md.R.Y + (md.R.Height - alt) / 2f, E(3), alt);
+                using (var pth = Desenho.Arred(r, E(1.5f))) g.FillPath(b, pth);
+            }
+        g.SmoothingMode = SmoothingMode.None;
+    }
+
+    // um quadro: le o nivel de cada linha e redesenha so as barrinhas
+    void PassoSom()
+    {
+        if (!Visible || fechando || !app.MostrarSom) { tSom.Stop(); return; }
+        if (arrastoApp != null || arrastando != null || meds.Count == 0) return;
+        Graphics g = null;
+        try
+        {
+            foreach (var md in meds)
+            {
+                float pico = 0, v;
+                try
+                {
+                    if (md.M != null && md.M.GetPeakValue(out v) == 0) pico = v;
+                    if (md.Ms != null) foreach (var m in md.Ms) if (m.GetPeakValue(out v) == 0 && v > pico) pico = v;
+                }
+                catch { }
+                float[] h;
+                if (!historico.TryGetValue(md.Chave, out h)) { h = new float[BARRAS]; historico[md.Chave] = h; }
+                bool tinha = false; foreach (var x in h) if (x > 0.001f) tinha = true;
+                if (!tinha && pico < 0.001f) continue;              // continua em silencio: nao redesenha
+                // cada barra mostra um instante (da mais nova a mais antiga), do centro para as pontas
+                Array.Copy(h, 0, h, 1, BARRAS - 1);
+                h[0] = Math.Max(pico, h[1] * 0.6f);
+                if (!ClientRectangle.Contains(md.R)) continue;
+                if (g == null) g = CreateGraphics();
+                using (var bmp = new Bitmap(md.R.Width, md.R.Height))
+                {
+                    using (var gb = Graphics.FromImage(bmp))
+                    {
+                        gb.TranslateTransform(-md.R.X, -md.R.Y);
+                        // ordem das barras: centro = agora, lados = instantes anteriores (visual de "onda")
+                        var orig = (float[])h.Clone();
+                        h[2] = orig[0]; h[1] = orig[1]; h[3] = orig[2]; h[0] = orig[3]; h[4] = orig[4];
+                        DesenharMed(gb, md);
+                        Array.Copy(orig, h, BARRAS);
+                    }
+                    g.DrawImageUnscaled(bmp, md.R.Location);
+                }
+            }
+        }
+        finally { if (g != null) g.Dispose(); }
+    }
+
+    public void SomMudou()
+    {
+        Audio.ComMedidor = app.MostrarSom;
+        if (!Visible) return;
+        Recarregar();
+        if (app.MostrarSom) tSom.Start(); else { tSom.Stop(); historico.Clear(); Invalidate(); }
+    }
+
     void EsconderAgora()
     {
         if (!Visible) return;
+        tSom.Stop();
+        historico.Clear();
         fechando = false;
         tAnim.Stop();
         Hide();
@@ -2059,6 +2171,7 @@ class Painel : Form
         zonas.Clear();
         cartoes.Clear();
         chips.Clear();
+        meds.Clear();
         int W = largura, pad = E(12);
         int y = pad - rolagem;
 
@@ -2336,6 +2449,13 @@ class Painel : Form
             int nomeW = Math.Max(E(20), direita - xTexto);
             int nw = Math.Min(nomeW, TextRenderer.MeasureText(g, d.Nome, fNegrito, Size.Empty, TextFormatFlags.NoPadding).Width);
             TextRenderer.DrawText(g, d.Nome, d.Padrao ? fNegrito : fNormal, new Rectangle(xTexto, r1.Y, nomeW, r1.Height), cTexto, TF);
+            int xm = xTexto + nw + E(10);
+            if (app.MostrarSom && d.Medidor != null && nomeW - nw > LarguraMed() + E(12))
+            {
+                Medidor(g, xm, r1.Y + r1.Height / 2, hovCab ? cHover : cCartao, "d|" + d.Id, d.Medidor, null);
+                xm += LarguraMed() + E(4);
+                nw += LarguraMed() + E(14);
+            }
             if (app.MostrarAdaptador && !string.IsNullOrEmpty(d.Adaptador) && nomeW - nw > E(40))
                 TextRenderer.DrawText(g, d.Adaptador, fPequena, new Rectangle(xTexto + nw + E(8), r1.Y + E(1), nomeW - nw - E(8), r1.Height), cFraco, TF);
         }
@@ -2442,6 +2562,9 @@ class Painel : Form
         TextRenderer.DrawText(g, a.Nome, fNormal, new Rectangle(xTexto, y + E(3), nomeMax, E(24)), a.Ativo ? cTexto : cFraco, TF);
         if (a.Saida != null)
             TextRenderer.DrawText(g, "", fGlifoP, new Rectangle(xTexto + nw + E(6), y + E(3), E(14), E(24)), cAcento, TC);
+        if (app.MostrarSom && a.Medidores.Count > 0 && !arrastado)
+            Medidor(g, xTexto + nw + (a.Saida != null ? E(26) : E(10)), y + E(3) + E(12), linhaSobre && movel ? cHover : cCartao,
+                "a|" + d.Id + "|" + a.Exe, null, a.Medidores);
 
         // botao "..." discreto, so aparece com o mouse na linha
         if (movel && (linhaSobre || (app.MenuAberto && menuApp == a)))
@@ -3091,7 +3214,7 @@ class App : ApplicationContext
     public bool Lembrar = true, PerfisAuto = true, VoltarPerfil = true, RodaIcone = true, Mics = true,
                 Inativos = true, UsarPerfis = false, AvisoTela = true, RodaPainel = false,
                 Animacoes = true, FixarBandeja = true, MenuLateralAberto = true,
-                MostrarAdaptador = false, MostrarLogo = true;
+                MostrarAdaptador = false, MostrarLogo = true, MostrarSom = false;
     public readonly List<string> Ordem = new List<string>();
     public readonly Dictionary<string, bool> Abertos = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
     public int Passo = 2;
@@ -3135,6 +3258,7 @@ class App : ApplicationContext
         if (!File.Exists(arqConfig) && File.Exists(antigo)) try { File.Move(antigo, arqConfig); } catch { }
         bool primeiraVez = !File.Exists(arqConfig);
         LerConfig();
+        Audio.ComMedidor = MostrarSom;
         invocador.CreateControl();
         var h = invocador.Handle;
 
@@ -3785,6 +3909,8 @@ class App : ApplicationContext
 
     public void PainelMudou() { if (painel.Visible) painel.Recarregar(); }
 
+    public void DefinirSom(bool v) { MostrarSom = v; SalvarConfig(); painel.SomMudou(); }
+
     // Coloca a janela de Configuracoes ao lado do painel (sem ficar por baixo dele)
     public void AfastarConfig(Rectangle r)
     {
@@ -4160,6 +4286,7 @@ class App : ApplicationContext
                     case "menu_lateral": MenuLateralAberto = v == "1"; break;
                     case "adaptador": MostrarAdaptador = v == "1"; break;
                     case "logo": MostrarLogo = v == "1"; break;
+                    case "som": MostrarSom = v == "1"; break;
                     case "fixar": FixarBandeja = v == "1"; break;
                     case "ordem": Ordem.Clear(); foreach (var o in v.Split(';')) if (o.Length > 0) Ordem.Add(o); break;
                     case "aberto": { var a = v.Split('>'); if (a.Length == 2) Abertos[a[0]] = a[1] == "1"; } break;
@@ -4255,7 +4382,7 @@ class App : ApplicationContext
                 "lembrar=" + (Lembrar ? 1 : 0), "perfis_auto=" + (PerfisAuto ? 1 : 0), "voltar_perfil=" + (VoltarPerfil ? 1 : 0),
                 "roda=" + (RodaIcone ? 1 : 0), "mics=" + (Mics ? 1 : 0), "inativos=" + (Inativos ? 1 : 0),
                 "perfis=" + (UsarPerfis ? 1 : 0), "aviso=" + (AvisoTela ? 1 : 0), "roda_painel=" + (RodaPainel ? 1 : 0),
-                "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
+                "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
             foreach (var kv in Regras) l.Add("regra=" + kv.Key + ">" + kv.Value);
@@ -4612,6 +4739,8 @@ class Configuracoes : Form
             Chave("Mostrar apps em silêncio", "Mostra também os apps abertos que não estão tocando som agora", () => app.Inativos, v => app.Inativos = v);
             Chave("Mostrar o nome do adaptador", "Ex.: \"AMD High Definition Audio Device\" ao lado do nome de cada saída", () => app.MostrarAdaptador, v => app.MostrarAdaptador = v);
             Chave("Mostrar o logo no topo do painel", "O ícone roxo do Sintonia ao lado do nome, no cabeçalho do painel", () => app.MostrarLogo, v => app.MostrarLogo = v);
+            Chave("Mostrar o som tocando", "Barrinhas animadas ao lado de cada saída e app, conforme o som que está tocando. Só funciona com o painel aberto",
+                () => app.MostrarSom, v => app.DefinirSom(v));
             Botao("Altura máxima do painel", "Até onde o painel cresce. Passando disso, a lista rola com a roda do mouse",
                 () => app.AlturaMax == 100 ? "Tela toda" : app.AlturaMax + "% da tela", r =>
             {
