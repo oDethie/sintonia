@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.2.1.0")]
-[assembly: AssemblyFileVersion("1.2.1.0")]
+[assembly: AssemblyVersion("1.2.2.0")]
+[assembly: AssemblyFileVersion("1.2.2.0")]
 
 static class Program
 {
@@ -1008,6 +1008,126 @@ static class Processos
     static extern uint PrivateExtractIcons(string arq, int idx, int cx, int cy, IntPtr[] ic, uint[] ids, uint n, uint f);
     [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
 
+    [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)]
+    static extern int SHLoadIndirectString(string fonte, System.Text.StringBuilder saida, int n, IntPtr r);
+
+    // App da Microsoft Store: o .exe nao tem o icone/nome certos; eles ficam no AppxManifest.xml do pacote
+    class Pacote { public string Nome, Logo; }
+    static readonly Dictionary<string, Pacote> pacotes = new Dictionary<string, Pacote>(StringComparer.OrdinalIgnoreCase);
+
+    static Pacote PacoteDe(string exe)
+    {
+        if (exe == null || exe.IndexOf("\\WindowsApps\\", StringComparison.OrdinalIgnoreCase) < 0) return null;
+        Pacote pk;
+        if (pacotes.TryGetValue(exe, out pk)) return pk;
+        pk = null;
+        try
+        {
+            string dir = Path.GetDirectoryName(exe), raiz = null;
+            for (int i = 0; i < 5 && dir != null; i++, dir = Path.GetDirectoryName(dir))
+                if (File.Exists(Path.Combine(dir, "AppxManifest.xml"))) { raiz = dir; break; }
+            if (raiz != null)
+            {
+                var doc = new System.Xml.XmlDocument();
+                doc.Load(Path.Combine(raiz, "AppxManifest.xml"));
+                string ident = null, nomeProp = null, logoProp = null, nomeApp = null, logoApp = null;
+                string rel = exe.Substring(raiz.Length).TrimStart('\\');
+                foreach (System.Xml.XmlNode n in doc.GetElementsByTagName("*"))
+                {
+                    var el = n as System.Xml.XmlElement;
+                    if (el == null) continue;
+                    if (el.LocalName == "Identity" && ident == null) ident = el.GetAttribute("Name");
+                    else if (el.LocalName == "DisplayName" && el.ParentNode != null && el.ParentNode.LocalName == "Properties") nomeProp = el.InnerText.Trim();
+                    else if (el.LocalName == "Logo" && el.ParentNode != null && el.ParentNode.LocalName == "Properties") logoProp = el.InnerText.Trim();
+                    else if (el.LocalName == "Application")
+                    {
+                        bool este = string.Equals(el.GetAttribute("Executable").Replace('/', '\\'), rel, StringComparison.OrdinalIgnoreCase);
+                        if (!este && nomeApp != null) continue;
+                        foreach (System.Xml.XmlNode v in el.GetElementsByTagName("*"))
+                        {
+                            var ve = v as System.Xml.XmlElement;
+                            if (ve == null || ve.LocalName != "VisualElements") continue;
+                            nomeApp = ve.GetAttribute("DisplayName"); logoApp = ve.GetAttribute("Square44x44Logo");
+                            if (logoApp.Length == 0) logoApp = ve.GetAttribute("Square150x150Logo");
+                            break;
+                        }
+                    }
+                }
+                pk = new Pacote();
+                pk.Nome = TextoDoPacote(Path.GetFileName(raiz), ident, string.IsNullOrEmpty(nomeApp) ? nomeProp : nomeApp);
+                if (pk.Nome == null && nomeProp != null && nomeApp != nomeProp) pk.Nome = TextoDoPacote(Path.GetFileName(raiz), ident, nomeProp);
+                string logo = string.IsNullOrEmpty(logoApp) ? logoProp : logoApp;
+                if (!string.IsNullOrEmpty(logo)) pk.Logo = Path.Combine(raiz, logo.Replace('/', '\\'));
+            }
+        }
+        catch { pk = null; }
+        pacotes[exe] = pk;
+        return pk;
+    }
+
+    // "ms-resource:AppName" -> texto de verdade (no idioma do Windows)
+    static string TextoDoPacote(string nomeCompleto, string ident, string v)
+    {
+        if (string.IsNullOrEmpty(v)) return null;
+        if (!v.StartsWith("ms-resource:", StringComparison.OrdinalIgnoreCase)) return v.Length > 40 ? null : v;
+        string chave = v.Substring(12);
+        var tentativas = new List<string>();
+        if (chave.StartsWith("//")) tentativas.Add(v);
+        else
+        {
+            tentativas.Add("ms-resource://" + ident + "/resources/" + chave.TrimStart('/'));
+            tentativas.Add("ms-resource://" + ident + "/" + chave.TrimStart('/'));
+            tentativas.Add(v);
+        }
+        foreach (var t in tentativas)
+        {
+            var sb = new System.Text.StringBuilder(256);
+            if (SHLoadIndirectString("@{" + nomeCompleto + "? " + t + "}", sb, sb.Capacity, IntPtr.Zero) == 0)
+            {
+                string r = sb.ToString().Trim();
+                if (r.Length > 0 && r.Length <= 40 && !r.StartsWith("ms-resource")) return r;
+            }
+        }
+        return null;
+    }
+
+    static string Digitos(string s, int i) { int j = i; while (j < s.Length && char.IsDigit(s[j])) j++; return s.Substring(i, j - i); }
+
+    // o logo do pacote tem varias versoes (tamanhos/escalas): pega a mais adequada
+    static Bitmap LogoDoPacote(string logo, int tam)
+    {
+        string dir = Path.GetDirectoryName(logo), nome = Path.GetFileNameWithoutExtension(logo), ext = Path.GetExtension(logo);
+        if (!Directory.Exists(dir)) return null;
+        string melhor = null; int nota = int.MinValue;
+        foreach (var f in Directory.GetFiles(dir, nome + "*" + ext))
+        {
+            string meio = Path.GetFileNameWithoutExtension(f).Substring(nome.Length).ToLowerInvariant();
+            if (meio.Contains("contrast") || meio.Contains("lightunplated")) continue;
+            int n = 0, t;
+            int i = meio.IndexOf("targetsize-");
+            if (i >= 0 && int.TryParse(Digitos(meio, i + 11), out t))
+                n = 1000 - Math.Abs(t - tam) * 4 - (t < tam ? 200 : 0);
+            else if ((i = meio.IndexOf("scale-")) >= 0 && int.TryParse(Digitos(meio, i + 6), out t))
+                n = 500 + Math.Min(t, 200);
+            else n = 300;
+            if (meio.Contains("altform-unplated")) n += 50;     // sem o quadrado colorido de fundo
+            if (n > nota) { nota = n; melhor = f; }
+        }
+        if (melhor == null) return null;
+        using (var ms = new MemoryStream(File.ReadAllBytes(melhor)))
+        using (var img = Image.FromStream(ms))
+        {
+            var b = new Bitmap(tam, tam);
+            using (var g = Graphics.FromImage(b))
+            {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                g.DrawImage(img, new Rectangle(0, 0, tam, tam));
+            }
+            return b;
+        }
+    }
+
     static readonly Dictionary<string, string> nomes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     static readonly Dictionary<string, Bitmap> icones = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
 
@@ -1043,6 +1163,8 @@ static class Processos
         string n;
         if (nomes.TryGetValue(caminho, out n)) return n;
         n = null;
+        var pk = PacoteDe(caminho);
+        if (pk != null && pk.Nome != null) { nomes[caminho] = pk.Nome; return pk.Nome; }
         try
         {
             var fv = FileVersionInfo.GetVersionInfo(caminho);
@@ -1061,6 +1183,9 @@ static class Processos
         Bitmap b;
         if (icones.TryGetValue(k, out b)) return b;
         b = null;
+        var pk = PacoteDe(caminho);
+        if (pk != null && pk.Logo != null) try { b = LogoDoPacote(pk.Logo, tam); } catch { b = null; }
+        if (b != null) { icones[k] = b; return b; }
         try
         {
             var hs = new IntPtr[1]; var ids = new uint[1];
@@ -1912,6 +2037,7 @@ class Painel : Form
     float pcPos = -1f, troca;
     int trocaDir, yConteudo;
     float hAnim; bool hAnimando;
+    int topoFixo = int.MinValue;   // depois de trocar de PC, o topo (com a barra dos PCs) fica no lugar
 
     // ---- outro PC (controle pela rede) ----
     public ParPC Alvo;                 // null = este PC
@@ -2207,7 +2333,7 @@ class Painel : Form
         largura = E(360);
         rolagem = 0;
         fechando = false;
-        listaPerfis = false; listaAb = 0f;
+        listaPerfis = false; listaAb = 0f; topoFixo = int.MinValue;
         abertura.Clear();
         vista[0] = vista[1] = 0f; vistaAlvo[0] = vistaAlvo[1] = false;
         Carregar();
@@ -2244,6 +2370,7 @@ class Painel : Form
     {
         if (!app.Animacoes) { troca = 0f; return; }
         trocaDir = dir; troca = 1f;
+        if (!cimaBarra) topoFixo = Top;
         hAnim = ClientSize.Height; hAnimando = true;
         Animar();
     }
@@ -2253,6 +2380,8 @@ class Painel : Form
         int h = hAnimando ? (int)Math.Round(hAnim) : AlturaAlvo();
         int x = area.Right - largura - E(12);
         int y = cimaBarra ? area.Top + E(12) - (int)desl : area.Bottom - h - E(12) + (int)desl;
+        if (!cimaBarra && topoFixo != int.MinValue && Visible)
+            y = Math.Min(topoFixo, area.Bottom - h - E(12)) + (int)desl;   // cresce para baixo; se nao couber, sobe so o necessario
         if (bordaBarra == 2) x = area.Left + E(12);
         int maxRol = Math.Max(0, alturaConteudo - h);
         if (rolagem > maxRol) rolagem = maxRol;
