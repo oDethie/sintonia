@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.2.2.0")]
-[assembly: AssemblyFileVersion("1.2.2.0")]
+[assembly: AssemblyVersion("1.2.3.0")]
+[assembly: AssemblyFileVersion("1.2.3.0")]
 
 static class Program
 {
@@ -2037,7 +2037,7 @@ class Painel : Form
     float pcPos = -1f, troca;
     int trocaDir, yConteudo;
     float hAnim; bool hAnimando;
-    int topoFixo = int.MinValue;   // depois de trocar de PC, o topo (com a barra dos PCs) fica no lugar
+    int alturaFixa;   // depois de trocar de PC o painel fica com a maior altura vista (colado embaixo e sem pular)
 
     // ---- outro PC (controle pela rede) ----
     public ParPC Alvo;                 // null = este PC
@@ -2333,7 +2333,7 @@ class Painel : Form
         largura = E(360);
         rolagem = 0;
         fechando = false;
-        listaPerfis = false; listaAb = 0f; topoFixo = int.MinValue;
+        listaPerfis = false; listaAb = 0f; alturaFixa = 0;
         abertura.Clear();
         vista[0] = vista[1] = 0f; vistaAlvo[0] = vistaAlvo[1] = false;
         Carregar();
@@ -2355,7 +2355,11 @@ class Painel : Form
         if (app.MostrarSom) tSom.Start();
     }
 
-    int AlturaAlvo() { return Math.Min(alturaConteudo, (int)(area.Height * app.AlturaMax / 100.0)); }
+    int AlturaAlvo()
+    {
+        if (alturaFixa > 0) alturaFixa = Math.Max(alturaFixa, alturaConteudo);
+        return Math.Min(Math.Max(alturaConteudo, alturaFixa), (int)(area.Height * app.AlturaMax / 100.0));
+    }
 
     int IndiceAlvo()
     {
@@ -2370,7 +2374,7 @@ class Painel : Form
     {
         if (!app.Animacoes) { troca = 0f; return; }
         trocaDir = dir; troca = 1f;
-        if (!cimaBarra) topoFixo = Top;
+        alturaFixa = Math.Max(alturaFixa, ClientSize.Height);
         hAnim = ClientSize.Height; hAnimando = true;
         Animar();
     }
@@ -2380,8 +2384,6 @@ class Painel : Form
         int h = hAnimando ? (int)Math.Round(hAnim) : AlturaAlvo();
         int x = area.Right - largura - E(12);
         int y = cimaBarra ? area.Top + E(12) - (int)desl : area.Bottom - h - E(12) + (int)desl;
-        if (!cimaBarra && topoFixo != int.MinValue && Visible)
-            y = Math.Min(topoFixo, area.Bottom - h - E(12)) + (int)desl;   // cresce para baixo; se nao couber, sobe so o necessario
         if (bordaBarra == 2) x = area.Left + E(12);
         int maxRol = Math.Max(0, alturaConteudo - h);
         if (rolagem > maxRol) rolagem = maxRol;
