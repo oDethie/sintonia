@@ -1,0 +1,7 @@
+# Executavel compilado (vai na aba Releases, nao no codigo)
+*.exe
+*.pdb
+
+# Arquivos do sistema
+Thumbs.db
+desktop.ini
