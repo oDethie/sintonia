@@ -23,7 +23,7 @@ O controle de volume do Windows esconde o que mais importa: trocar a saída (fon
 - **Usar como padrão** com um botão próprio (sem trocar por engano). A saída padrão tem uma barrinha discreta na lateral.
 - **Organize do seu jeito:** arraste as saídas para mudar a ordem, recolha/expanda com a setinha, renomeie ("Fone", "Caixa", "Monitor") e esconda o que não usa (o olhinho mostra os escondidos).
 - **Perfis** (opcional, até 10): guardam a saída padrão, o microfone, a saída e o volume de cada app e como o painel está. Troque pela lista **Perfil** no painel (abre ali mesmo, com o ativo marcado; arraste para mudar a ordem), pelo menu do ícone ou por atalho. Podem **ativar sozinhos** quando um app (ex.: um jogo) começa a tocar e voltar ao anterior quando ele fecha.
-- **Atalhos de teclado** configuráveis: abrir o painel, próxima saída, mudo geral e um por perfil.
+- **Atalhos de teclado** configuráveis (vêm vazios; escolha os seus): abrir o painel, próxima saída, mudo geral e um por perfil.
 - **Aviso na tela** discreto ao usar os atalhos (não aparece por cima de jogos em tela cheia).
 - **Som tocando** (opcional): barrinhas animadas ao lado de cada saída e app mostram o som que está tocando, só com o painel aberto.
 - **Controlar outro PC da casa** (opcional, novo na 1.1): pareie o PC e o notebook com um código e mude o som de um pelo painel do outro. Veja [Outros PCs](#outros-pcs).
@@ -55,7 +55,8 @@ Requisitos: Windows 10 (versão 2004 ou mais nova) ou Windows 11. O .NET Framewo
 | **Arrastar o nome de uma saída** | Muda a ordem da lista |
 | **Setinha** | Recolhe/expande a saída |
 | **Botão "Usar como padrão"** (aparece com o mouse em cima) | Deixa a saída como padrão do Windows |
-| **Clique direito numa saída / app / perfil** | Opções daquele item |
+| **Clique direito numa saída / app / perfil / PC** | Opções daquele item (no PC: reconectar, renomear, esquecer) |
+| **Mouse sobre uma barra + setas ← →** | Muda o volume de 1 em 1 |
 | **Olhinho** ao lado de "Saída" | Mostra as saídas escondidas para trazê-las de volta |
 | **Engrenagem** | Abre as Configurações |
 | **Clique direito no ícone** | Menu rápido: saída, microfone, mudo, perfis, Configurações, Sair |
@@ -70,7 +71,7 @@ Para mudar o som do notebook pelo painel do PC (ou o contrário):
 
 Cada PC pode ser controlador, controlado ou os dois, e dá para trocar quando quiser. Tudo vem **desligado**.
 
-No PC que está sendo controlado, o ícone do Sintonia perto do relógio ganha uma **bolinha** enquanto o outro PC está conectado, e o painel dele mostra "*Nome do PC* está controlando este PC". Quando o outro PC muda um volume, o ícone mostra por um instante o **app ou a saída** que mudou, com uma **seta para cima ou para baixo** (ou um **X** no mudo).
+No PC que está sendo controlado, o ícone do Sintonia perto do relógio ganha uma **bolinha** enquanto o outro PC está conectado, e o painel dele mostra "*Nome do PC* está controlando este PC". Quando o outro PC muda um volume, o ícone mostra por um instante o **app ou a saída** que mudou, com uma **seta para cima ou para baixo** (verde subindo, amarela descendo, **X** vermelho no mudo).
 
 **Segurança:**
 - Só conecta na **rede de casa** (endereços privados da mesma rede); pedidos de fora são recusados antes de qualquer coisa.

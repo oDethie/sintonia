@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.3.1.0")]
+[assembly: AssemblyFileVersion("1.3.1.0")]
 
 static class Program
 {
@@ -1508,9 +1508,12 @@ static class Desenho
             g.CompositingMode = CompositingMode.SourceCopy;
             using (var b = new SolidBrush(Color.Transparent)) g.FillEllipse(b, x - n * 0.06f, y - n * 0.06f, d + n * 0.12f, d + n * 0.12f);
             g.CompositingMode = CompositingMode.SourceOver;
-            using (var b = new SolidBrush(tipo == 2 ? Color.FromArgb(196, 43, 28) : acento)) g.FillEllipse(b, x, y, d, d);
+            Color fundo = tipo == 2 ? Color.FromArgb(196, 43, 28)        // mudo: vermelho
+                        : tipo == -1 ? Color.FromArgb(247, 185, 20)      // desceu: amarelo
+                        : Color.FromArgb(16, 137, 62);                   // subiu / som de volta: verde
+            using (var b = new SolidBrush(fundo)) g.FillEllipse(b, x, y, d, d);
             float cx = x + d / 2, cy = y + d / 2, r = d * 0.26f;
-            using (var pn = new Pen(Color.White, Math.Max(1.2f, n / 14f)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+            using (var pn = new Pen(tipo == -1 ? Color.FromArgb(40, 30, 0) : Color.White, Math.Max(1.2f, n / 14f)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
             {
                 if (tipo == 1 || tipo == -1)
                 {
@@ -2643,6 +2646,20 @@ class Painel : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys k)
     {
+        if ((k == Keys.Left || k == Keys.Right) && arrastando == null)
+        {
+            // com o mouse em cima de uma barra: setas mudam de 1 em 1
+            var zb = ZonaEm(PointToClient(Cursor.Position));
+            if (zb != null && (zb.Tipo == Z_SLIDER_D || zb.Tipo == Z_SLIDER_A))
+            {
+                int dir = k == Keys.Right ? 1 : -1;
+                float atual = zb.G != null ? zb.G.Vol : zb.D.Vol;
+                float novo = Math.Max(0, Math.Min(100, (int)Math.Round(atual * 100) + dir)) / 100f;
+                if (zb.G != null) AplicarApp(zb.G, novo); else AplicarDisp(zb.D, novo);
+                Invalidate();
+                return true;
+            }
+        }
         if (k == Keys.Escape)
         {
             if (arrastoApp != null) { arrastoApp = null; arrastoAlvo = null; Capture = false; Cursor = Cursors.Default; Invalidate(); }
@@ -3420,6 +3437,7 @@ class Painel : Form
         {
             if (z != null && z.G != null && !z.G.Sistema && (z.G.Remoto || (z.G.Pids.Count > 0 && Politica.Disponivel))) MenuSaida(z);
             else if (z != null && z.Tipo == Z_PERFIL && z.P != null) MenuPerfil(z);
+            else if (z != null && z.Tipo == Z_PC) MenuPC(z);
             else if (z != null && z.G == null && z.D != null) MenuDisp(z);
             else app.MostrarMenu(this, PointToClient(Cursor.Position));
             return;
@@ -3652,6 +3670,65 @@ class Painel : Form
         var dir = cima ? (esq ? ToolStripDropDownDirection.AboveLeft : ToolStripDropDownDirection.AboveRight)
                        : (esq ? ToolStripDropDownDirection.BelowLeft : ToolStripDropDownDirection.BelowRight);
         m.Show(this, ptCliente, dir);
+    }
+
+    // Clique direito num PC da barra: opcoes daquela conexao
+    void MenuPC(Zona z)
+    {
+        var pc = z.Id == "" ? null : app.ParPorId(z.Id);
+        string chave = "pc|" + z.Id;
+        if (Alterna.FecharSeAberto(chave) || !Alterna.PodeAbrir(chave)) return;
+        var menu = new ContextMenuStrip { ShowImageMargin = false, ShowCheckMargin = true };
+        if (pc == null)
+        {
+            menu.Items.Add(new ToolStripLabel("Este PC  ·  " + Environment.MachineName) { Tag = "fraco" });
+            if (Alvo != null)
+            {
+                var ver = new ToolStripMenuItem("Mostrar este PC");
+                ver.Click += (s, e) => Clique(z);
+                menu.Items.Add(ver);
+            }
+        }
+        else
+        {
+            bool ativo = Alvo != null && Alvo.Id == pc.Id;
+            string estado = !ativo ? "" : remotoFalhou ? "  ·  sem conexão" : estadoRemoto != null ? "  ·  conectado" : "  ·  conectando…";
+            menu.Items.Add(new ToolStripLabel(pc.Nome + estado) { Tag = "fraco" });
+            if (!string.IsNullOrEmpty(pc.UltimoIP)) menu.Items.Add(new ToolStripLabel("Endereço " + pc.UltimoIP) { Tag = "fraco" });
+            if (!ativo)
+            {
+                var ver = new ToolStripMenuItem("Mostrar este PC");
+                ver.Click += (s, e) => Clique(z);
+                menu.Items.Add(ver);
+            }
+            else
+            {
+                var rec = new ToolStripMenuItem("Reconectar");
+                rec.Click += (s, e) => Clique(new Zona { Tipo = Z_TENTAR, R = z.R });
+                menu.Items.Add(rec);
+            }
+            menu.Items.Add(new ToolStripSeparator());
+            string id = pc.Id;
+            var ren = new ToolStripMenuItem("Renomear…");
+            ren.Click += (s, e) => BeginInvoke(new Action(() => { Esconder(); app.RenomearPar(id); Mostrar(); }));
+            menu.Items.Add(ren);
+            var esq = new ToolStripMenuItem("Esquecer este PC");
+            var sim = new ToolStripMenuItem("Sim, esquecer \"" + pc.Nome + "\"");
+            sim.Click += (s, e) => BeginInvoke(new Action(() => { app.RemoverPar(id); Recarregar(); }));
+            esq.DropDownItems.Add(sim);
+            esq.DropDownItems.Add(new ToolStripMenuItem("Cancelar"));
+            menu.Items.Add(esq);
+        }
+        menu.Items.Add(new ToolStripSeparator());
+        var cfg = new ToolStripMenuItem("Configurações de Outros PCs…");
+        cfg.Click += (s, e) => BeginInvoke(new Action(() => { app.AbrirConfiguracoes(4); app.AfastarConfig(Bounds); }));
+        menu.Items.Add(cfg);
+
+        app.AplicarTema(menu);
+        app.MenuAberto = true;
+        menu.Closed += (s, e) => { Alterna.Fechou(chave); app.MenuAberto = false; app.ConferirPainel(); };
+        Alterna.Abriu(chave, menu);
+        MostrarDentro(menu, PointToClient(Cursor.Position), false);
     }
 
     void AbrirListaPerfis(bool abrir)
@@ -4514,8 +4591,8 @@ class App : ApplicationContext
     public int Passo = 2;
     public int AlturaMax = 90;   // % da altura livre da tela; passando disso o painel rola
     string tema = "auto";
-    public readonly uint[] AtMod = { 0x8 | 0x1, 0x8 | 0x1, 0x8 | 0x1 };            // Win+Alt
-    public readonly uint[] AtVk = { (uint)Keys.V, (uint)Keys.O, (uint)Keys.S };   // V painel, O proxima saida, S silenciar (Win+Alt+M ja e usado por outro programa)
+    public readonly uint[] AtMod = { 0, 0, 0 };   // atalhos: nenhum por padrao (a pessoa escolhe em Configuracoes > Atalhos)
+    public readonly uint[] AtVk = { 0, 0, 0 };
     public static readonly string[] AtNome = { "Abrir o painel", "Próxima saída", "Mudo geral" };
     readonly bool[] atOk = { true, true, true };
     public readonly Dictionary<string, string> Regras = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -5333,6 +5410,18 @@ class App : ApplicationContext
         AtualizarConfig();
         PainelMudou();
         if (!euControlo) Avisar('\uE7F8', "Pareado com " + NomeLimpo(p.Nome));
+    }
+
+    public void RenomearPar(string id)
+    {
+        var pc = ParPorId(id);
+        if (pc == null) return;
+        string n = PedirTexto("Renomear PC", "Um nome fácil para este PC (ex.: \"Notebook\", \"Sala\")", pc.Nome);
+        if (n == null) return;
+        lock (pares) pc.Nome = NomeLimpo(n);
+        SalvarConfig();
+        AtualizarConfig();
+        PainelMudou();
     }
 
     public void RemoverPar(string id)
