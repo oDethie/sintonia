@@ -70,6 +70,8 @@ Para mudar o som do notebook pelo painel do PC (ou o contrário):
 
 Cada PC pode ser controlador, controlado ou os dois, e dá para trocar quando quiser. Tudo vem **desligado**.
 
+No PC que está sendo controlado, o ícone do Sintonia perto do relógio ganha uma **bolinha** enquanto o outro PC está conectado, e o painel dele mostra "*Nome do PC* está controlando este PC". Quando o outro PC muda um volume, o ícone mostra por um instante o **app ou a saída** que mudou, com uma **seta para cima ou para baixo** (ou um **X** no mudo).
+
 **Segurança:**
 - Só conecta na **rede de casa** (endereços privados da mesma rede); pedidos de fora são recusados antes de qualquer coisa.
 - Só PCs **pareados** conversam. O código vale **uma vez**, por **2 minutos** e **3 tentativas**. Ele nunca vai pela rede: os dois lados só provam que o conhecem.

@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.2.3.0")]
-[assembly: AssemblyFileVersion("1.2.3.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 static class Program
 {
@@ -1476,6 +1476,62 @@ static class Desenho
         return bmp;
     }
 
+    // bolinha de "conectado" no canto do icone da bandeja (outro PC controlando este)
+    public static void Conectado(Bitmap bmp, Color acento, Color contorno)
+    {
+        int n = bmp.Width;
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            float d = Math.Max(5f, n * 0.42f), x = n - d, y = n - d;
+            g.CompositingMode = CompositingMode.SourceCopy;
+            using (var b = new SolidBrush(Color.Transparent)) g.FillEllipse(b, x - n * 0.07f, y - n * 0.07f, d + n * 0.14f, d + n * 0.14f);
+            g.CompositingMode = CompositingMode.SourceOver;
+            using (var b = new SolidBrush(acento)) g.FillEllipse(b, x, y, d, d);
+        }
+    }
+
+    // icone da bandeja enquanto o outro PC muda algo: o item (app ou saida) + seta / mudo
+    public static Bitmap Atividade(int n, Bitmap app, char glifo, Color cor, int tipo, Color acento)
+    {
+        var bmp = new Bitmap(n, n, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            float t = n * 0.8f;
+            if (app != null) g.DrawImage(app, new RectangleF(0, 0, t, t));
+            else using (var gl = Glifo(glifo, (int)Math.Round(t), cor, 0.85f)) g.DrawImage(gl, 0, 0);
+            // selo no canto: seta para cima/baixo, ou X (mudo), ou alto-falante (som de volta)
+            float d = n * 0.56f, x = n - d, y = n - d;
+            g.CompositingMode = CompositingMode.SourceCopy;
+            using (var b = new SolidBrush(Color.Transparent)) g.FillEllipse(b, x - n * 0.06f, y - n * 0.06f, d + n * 0.12f, d + n * 0.12f);
+            g.CompositingMode = CompositingMode.SourceOver;
+            using (var b = new SolidBrush(tipo == 2 ? Color.FromArgb(196, 43, 28) : acento)) g.FillEllipse(b, x, y, d, d);
+            float cx = x + d / 2, cy = y + d / 2, r = d * 0.26f;
+            using (var pn = new Pen(Color.White, Math.Max(1.2f, n / 14f)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+            {
+                if (tipo == 1 || tipo == -1)
+                {
+                    float s = tipo == 1 ? -1 : 1;
+                    g.DrawLine(pn, cx, cy - s * r, cx, cy + s * r * 1.05f);
+                    g.DrawLines(pn, new[] { new PointF(cx - r, cy + s * r * 0.15f), new PointF(cx, cy + s * r * 1.05f), new PointF(cx + r, cy + s * r * 0.15f) });
+                }
+                else if (tipo == 2)
+                {
+                    g.DrawLine(pn, cx - r * 0.8f, cy - r * 0.8f, cx + r * 0.8f, cy + r * 0.8f);
+                    g.DrawLine(pn, cx + r * 0.8f, cy - r * 0.8f, cx - r * 0.8f, cy + r * 0.8f);
+                }
+                else
+                {
+                    g.DrawLines(pn, new[] { new PointF(cx - r, cy + r * 0.05f), new PointF(cx - r * 0.25f, cy + r * 0.8f), new PointF(cx + r, cy - r * 0.7f) });
+                }
+            }
+        }
+        return bmp;
+    }
+
     public static void SalvarIco(string caminho)
     {
         int[] tams = { 16, 20, 24, 32, 48, 64, 256 };
@@ -2661,6 +2717,22 @@ class Painel : Form
         // divisao sutil entre o titulo e o conteudo
         if (g != null) using (var pn = new Pen(cBorda)) g.DrawLine(pn, pad + E(4), y, W - pad - E(4), y);
         y += E(10);
+
+        // Este PC esta sendo controlado por outro: aviso discreto no topo
+        string quem = app.ControladoPor();
+        if (quem != null)
+        {
+            var rA = new Rectangle(pad, y, W - pad * 2, E(34));
+            if (g != null)
+            {
+                Fundo(g, rA, cCartao, E(6));
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (var b = new SolidBrush(cAcento)) g.FillEllipse(b, rA.X + E(13), rA.Y + rA.Height / 2 - E(4), E(8), E(8));
+                g.SmoothingMode = SmoothingMode.None;
+                TextRenderer.DrawText(g, quem + " está controlando este PC", fNormal, new Rectangle(rA.X + E(30), rA.Y, rA.Width - E(40), rA.Height), cTexto, TF);
+            }
+            y += rA.Height + E(10);
+        }
 
         // PCs: barra deslizante (Este PC + ate 2 outros), so com "Controlar outros PCs" ligado
         if (Alvo != null && (!app.Controlador || app.ParPorId(Alvo.Id) == null)) { Alvo = null; if (remoto != null) { remoto.Fechar(); remoto = null; } }
@@ -4306,6 +4378,7 @@ class Receptor
 
     void Atender(TcpClient c)
     {
+        int sessao = 0;
         try
         {
             using (var canal = new Canal(c))
@@ -4316,6 +4389,7 @@ class Receptor
                     p => app.Invocar(() => { app.ParearCom(p, false); return ""; }));
                 if (par == null) return;
                 app.Invocar(() => { app.AtualizarIpPar(par.Id, canal.Ip.ToString()); return ""; });
+                sessao = app.SessaoComecou(par.Nome);
                 canal.Prazo(60000);                                   // sem pedidos por 1 minuto: encerra
                 while (ligado && app.Receptor)
                 {
@@ -4326,7 +4400,11 @@ class Receptor
             }
         }
         catch { }
-        finally { Interlocked.Decrement(ref conexoes); }
+        finally
+        {
+            Interlocked.Decrement(ref conexoes);
+            if (sessao != 0) app.SessaoTerminou(sessao);
+        }
     }
 }
 
@@ -4603,11 +4681,25 @@ class App : ApplicationContext
         int n = 16;
         try { n = GetSystemMetricsForDpi(49 /*SM_CXSMICON*/, dpi); } catch { n = (int)(16 * dpi / 96); }
         bool claro = BarraClara();
-        string chave = mudoIcone + "|" + n + "|" + claro;
+        string quem = ControladoPor();
+        bool atv = DateTime.Now < atvAte;
+        string chave = mudoIcone + "|" + n + "|" + claro + "|" + (quem != null) + (atv ? "|" + atvCaminho + atvGlifo + atvTipo : "");
         if (chave != chaveIcone)
         {
             chaveIcone = chave;
-            using (var bmp = Desenho.Bandeja(n, claro ? Color.FromArgb(28, 28, 28) : Color.White, mudoIcone))
+            Color cor = claro ? Color.FromArgb(28, 28, 28) : Color.White;
+            Bitmap bmp;
+            if (atv)
+            {
+                Bitmap ic = atvCaminho != null ? Processos.Icone(atvCaminho, n) : null;   // fica no cache, nao descartar
+                bmp = Desenho.Atividade(n, ic, atvGlifo, cor, atvTipo, CorDeDestaque(!claro));
+            }
+            else
+            {
+                bmp = Desenho.Bandeja(n, cor, mudoIcone);
+                if (quem != null) Desenho.Conectado(bmp, CorDeDestaque(!claro), claro ? Color.White : Color.FromArgb(32, 32, 32));
+            }
+            using (bmp)
             {
                 var antigo = icone.Icon;
                 icone.Icon = Desenho.IconeDe(bmp);
@@ -4621,6 +4713,7 @@ class App : ApplicationContext
             nome += m ? " · mudo" : " · " + (int)Math.Round(v * 100) + "%";
         }
         if (UsarPerfis && PerfilAtivo != null) nome += "\nPerfil: " + PerfilAtivo;
+        if (quem != null) nome += "\nControlado por " + quem;
         icone.Text = nome.Length > 63 ? nome.Substring(0, 63) : nome;
     }
 
@@ -5144,6 +5237,49 @@ class App : ApplicationContext
     }
     public bool ReceptorAtivo { get { return servidor != null && servidor.Ligado; } }
 
+    // ---- quem esta controlando este PC agora (so enquanto o painel do outro mostra este) ----
+    readonly Dictionary<int, string> sessoes = new Dictionary<int, string>();
+    int proxSessao;
+    public int SessaoComecou(string nome)
+    {
+        int id;
+        lock (sessoes) { id = ++proxSessao; sessoes[id] = nome; }
+        Postar(() => { chaveIcone = null; AtualizarIcone(); PainelMudou(); });
+        return id;
+    }
+    public void SessaoTerminou(int id)
+    {
+        lock (sessoes) sessoes.Remove(id);
+        Postar(() => { chaveIcone = null; AtualizarIcone(); PainelMudou(); });
+    }
+    public string ControladoPor()
+    {
+        lock (sessoes)
+        {
+            if (sessoes.Count == 0) return null;
+            var l = new List<string>();
+            foreach (var n in sessoes.Values) if (!l.Contains(n)) l.Add(n);
+            return string.Join(" e ", l);
+        }
+    }
+
+    // o outro PC mudou algo: o icone da bandeja mostra o item com uma seta por um instante
+    string atvCaminho; char atvGlifo; int atvTipo;   // tipo: 1 subiu, -1 desceu, 2 mudo, 3 som de volta
+    DateTime atvAte;
+    Timer tAtv;
+    void Atividade(string caminho, char glifo, int tipo)
+    {
+        atvCaminho = caminho; atvGlifo = glifo; atvTipo = tipo;
+        atvAte = DateTime.Now.AddMilliseconds(1500);
+        if (tAtv == null)
+        {
+            tAtv = new Timer { Interval = 1500 };
+            tAtv.Tick += (s, e) => { if (DateTime.Now >= atvAte) { tAtv.Stop(); AtualizarIcone(); } };
+        }
+        tAtv.Stop(); tAtv.Start();
+        AtualizarIcone();
+    }
+
     public void DefinirControlador(bool v) { Controlador = v; SalvarConfig(); PainelMudou(); }
 
     public List<ParPC> Pares() { lock (pares) return new List<ParPC>(pares); }
@@ -5277,10 +5413,14 @@ class App : ApplicationContext
                         if (c[0] == "vold")
                         {
                             float v = Math.Max(0f, Math.Min(1f, float.Parse(c[2], inv)));
+                            float ant; bool mAnt;
+                            if (d.Ep.GetMasterVolumeLevelScalar(out ant) != 0) ant = d.Vol;
+                            if (d.Ep.GetMute(out mAnt) != 0) mAnt = d.Mudo;
                             d.Ep.SetMasterVolumeLevelScalar(v, ref Audio.Ctx); d.Vol = v;
-                            if (d.Mudo && v > 0) { d.Ep.SetMute(false, ref Audio.Ctx); d.Mudo = false; }
+                            if (mAnt && v > 0) { d.Ep.SetMute(false, ref Audio.Ctx); d.Mudo = false; }
+                            if (Math.Abs(v - ant) > 0.004f) Atividade(null, Audio.Glifo(d), v > ant ? 1 : -1);
                         }
-                        else { d.Mudo = c[2] == "1"; d.Ep.SetMute(d.Mudo, ref Audio.Ctx); }
+                        else { d.Mudo = c[2] == "1"; d.Ep.SetMute(d.Mudo, ref Audio.Ctx); Atividade(null, Audio.Glifo(d), d.Mudo ? 2 : 3); }
                         return "ok";
                     }
                 case "vola":
@@ -5289,13 +5429,20 @@ class App : ApplicationContext
                         var d = ListaRemota(false).Find(x => x.Id == c[1]);
                         var a = d == null ? null : d.Apps.Find(x => T(x.Exe) == c[2]);
                         if (a == null) return "nao";
+                        char gA = a.Sistema ? '\uE767' : '\uE8D6';
                         if (c[0] == "vola")
                         {
                             float v = Math.Max(0f, Math.Min(1f, float.Parse(c[3], inv)));
+                            float ant = a.Vol;
                             foreach (var sv in a.Vols) try { sv.SetMasterVolume(v, ref Audio.Ctx); if (a.Mudo && v > 0) sv.SetMute(false, ref Audio.Ctx); } catch { }
                             a.Vol = v; if (v > 0) a.Mudo = false;
+                            if (Math.Abs(v - ant) > 0.004f) Atividade(a.Caminho, gA, v > ant ? 1 : -1);
                         }
-                        else { a.Mudo = c[3] == "1"; foreach (var sv in a.Vols) try { sv.SetMute(a.Mudo, ref Audio.Ctx); } catch { } }
+                        else
+                        {
+                            a.Mudo = c[3] == "1"; foreach (var sv in a.Vols) try { sv.SetMute(a.Mudo, ref Audio.Ctx); } catch { }
+                            Atividade(a.Caminho, gA, a.Mudo ? 2 : 3);
+                        }
                         return "ok";
                     }
                 case "padrao":
