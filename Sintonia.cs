@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.1.1.0")]
+[assembly: AssemblyFileVersion("1.1.1.0")]
 
 static class Program
 {
@@ -207,6 +207,11 @@ static class Program
             r = rodar(c => { c.SessaoCliente(idCli, parCli); var x = c.Selar("segredo-segredo-segredo"); return Rede.S(x).Contains("segredo") ? "visível" : "cifrado"; },
                       c => { atender(c); return "ok"; });
             ok("conteúdo vai cifrado (" + r[0] + ")", r[0] == "cifrado");
+            r = rodar(c => { c.EnviarBruto(Rede.Juntar(Rede.B("QUEM"))); var q = Rede.Separar(c.ReceberBruto()); return Rede.S(q[0]) + "|" + Rede.S(q[1]) + "|" + Rede.S(q[2]); },
+                      c => { atender(c); return "ok"; });
+            ok("procura por TCP identifica o PC (" + r[0] + ")", r[0] == "EU|" + idServ + "|Servidor");
+            var swp = Stopwatch.StartNew(); var achados = Rede.ProcurarTcp(1500);
+            o.Add("INFO  procura TCP na rede: " + swp.ElapsedMilliseconds + " ms, " + achados.Count + " PC(s) com Sintonia 1.1.1+");
             ok("endereço da internet é recusado", !Rede.EhRedeLocal(IPAddress.Parse("8.8.8.8")) && Rede.EhRedeLocal(IPAddress.Loopback));
             ok("código tem 8 caracteres sem 0/O/1/I/L", Rede.NormalizarCodigo(Rede.NovoCodigo()).Length == 8 && Rede.NovoCodigo().IndexOfAny("01OIL".ToCharArray()) < 0);
         }
@@ -3682,6 +3687,69 @@ static class Rede
     public class Achado { public string Id, Nome, IP; }
     public static List<Achado> Procurar(int ms)
     {
+        List<Achado> porTcp = null;
+        var t = new Thread(() => { try { porTcp = ProcurarTcp(ms); } catch { porTcp = new List<Achado>(); } }) { IsBackground = true };
+        t.Start();
+        var r = ProcurarUdp(ms);
+        t.Join(ms + 2500);
+        if (porTcp != null) foreach (var a in porTcp) if (!r.Exists(x => x.Id == a.Id)) r.Add(a);
+        return r;
+    }
+
+    // tenta a porta do Sintonia em cada endereco da rede de casa (so redes pequenas, ate 1024 enderecos)
+    public static List<Achado> ProcurarTcp(int ms)
+    {
+        var r = new List<Achado>();
+        var tentativas = new List<KeyValuePair<TcpClient, IAsyncResult>>();
+        var ips = new List<IPAddress>();
+        try
+        {
+            foreach (var rede in MinhasRedes())
+            {
+                var a = rede.Key.GetAddressBytes(); var m = rede.Value.GetAddressBytes();
+                if (!(a[0] == 10 || (a[0] == 172 && a[1] >= 16 && a[1] <= 31) || (a[0] == 192 && a[1] == 168))) continue;
+                uint ip = (uint)(a[0] << 24 | a[1] << 16 | a[2] << 8 | a[3]), mask = (uint)(m[0] << 24 | m[1] << 16 | m[2] << 8 | m[3]);
+                uint qtd = ~mask;
+                if (qtd < 2 || qtd > 1024) continue;
+                uint baseIp = ip & mask;
+                for (uint h = 1; h < qtd; h++)
+                {
+                    uint x = baseIp | h;
+                    if (x == ip) continue;
+                    ips.Add(new IPAddress(new[] { (byte)(x >> 24), (byte)(x >> 16), (byte)(x >> 8), (byte)x }));
+                }
+            }
+            foreach (var ip in ips)
+            {
+                var c = new TcpClient();
+                try { tentativas.Add(new KeyValuePair<TcpClient, IAsyncResult>(c, c.BeginConnect(ip, PortaTcp, null, null))); } catch { c.Close(); }
+            }
+            var fim = DateTime.Now.AddMilliseconds(ms);
+            while (DateTime.Now < fim && !tentativas.TrueForAll(x => x.Value.IsCompleted)) Thread.Sleep(50);
+            foreach (var t in tentativas)
+            {
+                if (!t.Value.IsCompleted || !t.Key.Connected) continue;
+                try
+                {
+                    t.Key.EndConnect(t.Value);
+                    using (var c = new Canal(t.Key))
+                    {
+                        c.Prazo(800);
+                        c.EnviarBruto(Juntar(B("QUEM")));
+                        var p = Separar(c.ReceberBruto());
+                        if (p.Length == 3 && S(p[0]) == "EU" && EhRedeLocal(c.Ip))
+                            r.Add(new Achado { Id = S(p[1]), Nome = S(p[2]), IP = c.Ip.ToString() });
+                    }
+                }
+                catch { }
+            }
+        }
+        finally { foreach (var t in tentativas) try { t.Key.Close(); } catch { } }
+        return r;
+    }
+
+    static List<Achado> ProcurarUdp(int ms)
+    {
         var r = new List<Achado>();
         using (var u = new UdpClient(0))
         {
@@ -3872,6 +3940,11 @@ class Canal : IDisposable
                 Chaves(Segredo(dh, r[2]), resumo, false);
                 Enviar("PRONTO");
                 return par;
+            }
+            if (tipo == "QUEM")
+            {
+                if (permitido()) EnviarBruto(Rede.Juntar(Rede.B("EU"), Rede.B(meuId), Rede.B(meuNome)));
+                return null;
             }
             if (tipo == "PAREAR")
             {
@@ -5973,6 +6046,16 @@ class Configuracoes : Form
             Chave("Controlar outros PCs", "Mostra no painel um botão para cada PC pareado, para mudar o som dele daqui", () => app.Controlador, v => app.DefinirControlador(v));
             Chave("Pode ser controlado por outros PCs", "Fica esperando, parado, um PC pareado pedir algo. Na primeira vez o Windows pergunta se libera o Sintonia: marque só \"Redes privadas\"",
                 () => app.Receptor, v => app.Receptor = v);
+            if (app.Receptor && app.ReceptorAtivo)
+            {
+                var ends = new List<string>();
+                foreach (var rd in Rede.MinhasRedes())
+                {
+                    var b = rd.Key.GetAddressBytes();
+                    if (b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168)) ends.Add(rd.Key.ToString());
+                }
+                if (ends.Count > 0) Nota("Endereço deste PC na rede: " + string.Join("  ou  ", ends) + ". Se o outro PC não achar este na procura, digite esse endereço lá.");
+            }
             if (app.Receptor && !app.ReceptorAtivo)
                 Nota("Não foi possível esperar conexões (a porta " + Rede.PortaTcp + " pode estar em uso por outro programa).");
 

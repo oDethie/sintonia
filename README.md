@@ -65,7 +65,7 @@ Requisitos: Windows 10 (versão 2004 ou mais nova) ou Windows 11. O .NET Framewo
 Para mudar o som do notebook pelo painel do PC (ou o contrário):
 
 1. No PC que **vai ser controlado**: Configurações ▸ Outros PCs ▸ ligue **Pode ser controlado** e clique em **Gerar código**. Na primeira vez o Windows pergunta se libera o Sintonia na rede: marque só **Redes privadas**.
-2. No PC que **vai controlar**: Configurações ▸ Outros PCs ▸ ligue **Controlar outros PCs**, clique em **Adicionar um PC**, escolha o PC e digite o código (8 letras e números, vale 2 minutos).
+2. No PC que **vai controlar**: Configurações ▸ Outros PCs ▸ ligue **Controlar outros PCs**, clique em **Adicionar um PC**, escolha o PC e digite o código (8 letras e números, vale 2 minutos). Se ele não aparecer na lista, use **Digitar o endereço do PC…** com o endereço mostrado no outro PC, logo abaixo de "Pode ser controlado".
 3. Pronto: o painel mostra um botão **Este PC** e um com o nome do outro PC. Clique nele para ver e mudar as saídas, os volumes, o mudo e a saída de cada app de lá.
 
 Cada PC pode ser controlador, controlado ou os dois, e dá para trocar quando quiser. Tudo vem **desligado**.
