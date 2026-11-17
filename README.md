@@ -22,7 +22,7 @@ O controle de volume do Windows esconde o que mais importa: trocar a saída (fon
 - **Saída de cada app:** arraste o app para outra saída, ou use o **⋯** / clique direito no app. A escolha é **garantida**: se o Windows "esquecer", o Sintonia coloca o app de volta na saída certa.
 - **Usar como padrão** com um botão próprio (sem trocar por engano). A saída padrão tem uma barrinha discreta na lateral.
 - **Organize do seu jeito:** arraste as saídas para mudar a ordem, recolha/expanda com a setinha, renomeie ("Fone", "Caixa", "Monitor") e esconda o que não usa (o olhinho mostra os escondidos).
-- **Perfis** (opcional, até 10): guardam a saída padrão, o microfone, a saída e o volume de cada app e como o painel está. Troque pelos botões do painel (numa linha só; os que não cabem ficam no botão **+N**), pelo menu do ícone ou por atalho. Podem **ativar sozinhos** quando um app (ex.: um jogo) começa a tocar e voltar ao anterior quando ele fecha.
+- **Perfis** (opcional, até 10): guardam a saída padrão, o microfone, a saída e o volume de cada app e como o painel está. Troque pela lista **Perfil** no painel (abre ali mesmo, com o ativo marcado; arraste para mudar a ordem), pelo menu do ícone ou por atalho. Podem **ativar sozinhos** quando um app (ex.: um jogo) começa a tocar e voltar ao anterior quando ele fecha.
 - **Atalhos de teclado** configuráveis: abrir o painel, próxima saída, mudo geral e um por perfil.
 - **Aviso na tela** discreto ao usar os atalhos (não aparece por cima de jogos em tela cheia).
 - **Som tocando** (opcional): barrinhas animadas ao lado de cada saída e app mostram o som que está tocando, só com o painel aberto.

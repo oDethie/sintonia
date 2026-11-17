@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.2.1.0")]
+[assembly: AssemblyFileVersion("1.2.1.0")]
 
 static class Program
 {
@@ -1905,13 +1905,13 @@ class Painel : Form
     readonly List<KeyValuePair<Rectangle, Perfil>> chips = new List<KeyValuePair<Rectangle, Perfil>>();
 
     class Zona { public Rectangle R; public int Tipo; public Disp D; public GrupoApp G; public Perfil P; public int F; public string Id; }
-    const int Z_RECOLHER = 10, Z_NOME_A = 11, Z_ESCONDIDOS = 12, Z_MOSTRAR = 13, Z_USAR = 14, Z_PC = 15, Z_TENTAR = 16, Z_MAIS_PERFIS = 17;
+    const int Z_RECOLHER = 10, Z_NOME_A = 11, Z_ESCONDIDOS = 12, Z_MOSTRAR = 13, Z_USAR = 14, Z_PC = 15, Z_TENTAR = 16, Z_LISTA_PERFIS = 17;
+    bool listaPerfis; float listaAb;     // lista suspensa dos perfis (abre dentro do painel)
 
     // troca de PC: destaque que desliza, conteudo que entra de lado e altura que acompanha
     float pcPos = -1f, troca;
     int trocaDir, yConteudo;
     float hAnim; bool hAnimando;
-    readonly List<Perfil> perfisFora = new List<Perfil>();
 
     // ---- outro PC (controle pela rede) ----
     public ParPC Alvo;                 // null = este PC
@@ -2120,6 +2120,13 @@ class Painel : Form
                 if (Math.Abs(alvo - f) < 0.02f) f = alvo;
                 abertura[d.Id] = f; layout = true;
             }
+        float alvoL = listaPerfis ? 1f : 0f;
+        if (listaAb != alvoL)
+        {
+            listaAb += (alvoL - listaAb) * 0.3f;
+            if (Math.Abs(alvoL - listaAb) < 0.02f) listaAb = alvoL;
+            layout = true;
+        }
         int alvoPc = IndiceAlvo();
         if (pcPos >= 0 && pcPos != alvoPc)
         {
@@ -2200,6 +2207,7 @@ class Painel : Form
         largura = E(360);
         rolagem = 0;
         fechando = false;
+        listaPerfis = false; listaAb = 0f;
         abertura.Clear();
         vista[0] = vista[1] = 0f; vistaAlvo[0] = vistaAlvo[1] = false;
         Carregar();
@@ -2575,83 +2583,84 @@ class Painel : Form
             g.TranslateTransform(trocaDir * troca * E(48), 0);
         }
 
-        // Perfis (botoes) - sao deste PC; uma linha so, o que nao cabe vai para o "+N"
-        perfisFora.Clear();
+        // Perfis - sao deste PC: um botao com o perfil ativo que abre a lista aqui mesmo no painel
         if (app.UsarPerfis && Alvo == null)
         {
-            if (temBarra)
+            if (g != null) TextRenderer.DrawText(g, "Perfil", fPequena, new Rectangle(pad + E(4), y, W - pad * 2, E(18)), cFraco, TF);
+            y += E(22);
+            var rDD = new Rectangle(pad, y, W - pad * 2, E(36));
+            Add(rDD, Z_LISTA_PERFIS, null, null, null);
+            var ativo = app.Perfis.Find(pf => pf.Nome == app.PerfilAtivo);
+            if (g != null)
             {
-                if (g != null) TextRenderer.DrawText(g, "Perfil", fPequena, new Rectangle(pad + E(4), y, W - pad * 2, E(18)), cFraco, TF);
-                y += E(22);
+                bool hov = Sobre(Z_LISTA_PERFIS, null, null, null);
+                Fundo(g, rDD, hov || listaPerfis ? cHover : cCartao, E(6));
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (var pn = new Pen(cBorda)) using (var pth = Desenho.Arred(new RectangleF(rDD.X + 0.5f, rDD.Y + 0.5f, rDD.Width - 1, rDD.Height - 1), E(6))) g.DrawPath(pn, pth);
+                g.SmoothingMode = SmoothingMode.None;
+                string txt = ativo != null ? ativo.Nome : app.Perfis.Count == 0 ? "Salvar a configuração de agora como perfil" : "Nenhum perfil ativo";
+                TextRenderer.DrawText(g, txt, ativo != null ? fNegrito : fNormal, new Rectangle(rDD.X + E(14), rDD.Y, rDD.Width - E(52), rDD.Height), ativo != null ? cTexto : cFraco, TF);
+                // setinha que gira conforme a lista abre
+                var rSeta = new Rectangle(rDD.Right - E(34), rDD.Y, E(24), rDD.Height);
+                var est = g.Save();
+                g.TranslateTransform(rSeta.X + rSeta.Width / 2f, rSeta.Y + rSeta.Height / 2f);
+                g.RotateTransform(180f * listaAb);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (var pn = new Pen(cTexto, Math.Max(1f, E(1.4f))) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+                    g.DrawLines(pn, new[] { new PointF(-E(5), -E(2.5f)), new PointF(0, E(2.5f)), new PointF(E(5), -E(2.5f)) });
+                g.SmoothingMode = SmoothingMode.None;
+                g.Restore(est);
             }
-            int x = pad, hC = E(30), gap = E(6), livre = W - pad * 2;
-            var lista = new List<Perfil>(app.Perfis);
-            Func<Perfil, int> larg = pf => Math.Min(livre, TextRenderer.MeasureText(pf.Nome, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width + E(28));
-            bool podeNovo = lista.Count < App.MaxPerfis;
-            int wNovo = lista.Count == 0 ? TextRenderer.MeasureText("Salvar como perfil", fNormal, Size.Empty, TextFormatFlags.NoPadding).Width + E(46) : hC;
-            int total = 0; foreach (var pf in lista) total += larg(pf) + gap;
-            var dentro = new List<Perfil>();
-            bool comMais = total + (podeNovo ? wNovo : 0) > livre;
-            if (!comMais) dentro.AddRange(lista);
-            else
+            y += rDD.Height;
+            if (listaAb > 0f)
             {
-                int wMais = E(46), usado = 0;
-                foreach (var pf in lista)
-                {
-                    int w = larg(pf);
-                    if (usado + w + gap + wMais > livre) break;
-                    dentro.Add(pf); usado += w + gap;
-                }
-                var at = lista.Find(pf => pf.Nome == app.PerfilAtivo);
-                if (at != null && !dentro.Contains(at))
-                {
-                    // o ativo sempre aparece: troca pelos ultimos ate caber
-                    while (dentro.Count > 0) { int u = 0; foreach (var d0 in dentro) u += larg(d0) + gap; if (u + larg(at) + gap + wMais <= livre) break; dentro.RemoveAt(dentro.Count - 1); }
-                    dentro.Add(at);
-                }
-                foreach (var pf in lista) if (!dentro.Contains(pf)) perfisFora.Add(pf);
-            }
-            var itens = new List<Perfil>(dentro);
-            if (!comMais && podeNovo) itens.Add(null);           // "+": novo perfil
-            for (int i = 0; i < itens.Count + (comMais ? 1 : 0); i++)
-            {
-                bool mais = i == itens.Count;
-                Perfil pp = mais ? null : itens[i];
-                bool novo = !mais && pp == null;
-                string txt = mais ? "+" + perfisFora.Count : novo ? (lista.Count == 0 ? "Salvar como perfil" : "") : pp.Nome;
-                int cw = mais ? E(46) : novo ? wNovo : larg(pp);
-                var r = new Rectangle(x, y, cw, hC);
-                int tipo = mais ? Z_MAIS_PERFIS : novo ? Z_NOVO_PERFIL : Z_PERFIL;
-                Add(r, tipo, null, null, pp);
+                var itens = new List<Perfil>(app.Perfis);
+                bool comNovo = itens.Count < App.MaxPerfis;
+                int hL = E(34), n = itens.Count + (comNovo ? 1 : 0);
+                int total = n * hL + E(8) + (comNovo && itens.Count > 0 ? E(9) : 0);
+                int hVis = (int)Math.Round(total * listaAb);
+                var rL = new Rectangle(pad, y + E(4), W - pad * 2, total);
+                GraphicsState est = null;
                 if (g != null)
                 {
-                    bool ativo = pp != null && pp.Nome == app.PerfilAtivo;
-                    bool hov = Sobre(tipo, null, null, pp);
-                    Color fundo = ativo ? (hov ? ControlPaint.Light(cAcento, 0.1f) : cAcento) : (hov ? cHover : cCartao);
-                    using (var pth = Desenho.Arred(new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1), E(4)))
-                    {
-                        using (var b2 = new SolidBrush(fundo)) g.FillPath(b2, pth);
-                        if (!ativo) using (var pn = new Pen(cBorda)) g.DrawPath(pn, pth);
-                    }
-                    if (novo)
-                    {
-                        var rg = lista.Count > 0 ? r : new Rectangle(r.X + E(8), r.Y, E(20), r.Height);
-                        TextRenderer.DrawText(g, "\uE710", fGlifoP, rg, cTexto, TC);
-                        if (lista.Count == 0) TextRenderer.DrawText(g, txt, fNormal, new Rectangle(r.X + E(32), r.Y, r.Width - E(38), r.Height), cTexto, TF);
-                    }
-                    else if (mais) TextRenderer.DrawText(g, txt, fNormal, r, cTexto, TC);
-                    else TextRenderer.DrawText(g, txt, fNormal, new Rectangle(r.X + E(14), r.Y, r.Width - E(28), r.Height),
-                        ativo ? cTextoAcento : cTexto, TF);
+                    est = g.Save();
+                    g.SetClip(new Rectangle(rL.X - 1, rL.Y - 1, rL.Width + 2, hVis + 2), CombineMode.Intersect);
+                    Fundo(g, rL, cCartao, E(6));
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    using (var pn = new Pen(cBorda)) using (var pth = Desenho.Arred(new RectangleF(rL.X + 0.5f, rL.Y + 0.5f, rL.Width - 1, rL.Height - 1), E(6))) g.DrawPath(pn, pth);
+                    g.SmoothingMode = SmoothingMode.None;
                 }
-                if (pp != null)
+                int yi = rL.Y + E(4);
+                for (int i = 0; i < n; i++)
                 {
-                    chips.Add(new KeyValuePair<Rectangle, Perfil>(r, pp));
-                    if (g != null && arrastoApp != null && arrastoApp.P == pp)
-                        Fundo(g, r, Color.FromArgb(150, cFundo), E(4));   // o que esta sendo arrastado fica apagadinho
+                    bool novo = i == itens.Count;
+                    if (novo && itens.Count > 0)
+                    {
+                        if (g != null) using (var pn = new Pen(cBorda)) g.DrawLine(pn, rL.X + E(12), yi + E(4), rL.Right - E(12), yi + E(4));
+                        yi += E(9);
+                    }
+                    Perfil pp = novo ? null : itens[i];
+                    var r = new Rectangle(rL.X + E(4), yi, rL.Width - E(8), hL);
+                    int tipo = novo ? Z_NOVO_PERFIL : Z_PERFIL;
+                    if (listaAb >= 0.99f) Add(r, tipo, null, null, pp);
+                    if (g != null)
+                    {
+                        bool at = pp != null && pp.Nome == app.PerfilAtivo;
+                        if (Sobre(tipo, null, null, pp) && listaAb >= 0.99f) Fundo(g, r, cHover, E(4));
+                        if (at) Fundo(g, new Rectangle(r.X, r.Y + E(9), E(3), r.Height - E(18)), cAcento, E(1.5f));
+                        string gl = novo ? "\uE710" : at ? "\uE73E" : "";
+                        if (gl.Length > 0) TextRenderer.DrawText(g, gl, fGlifoP, new Rectangle(r.X + E(10), r.Y, E(20), r.Height), novo ? cFraco : cTexto, TC);
+                        TextRenderer.DrawText(g, novo ? "Novo perfil com a configuração de agora" : pp.Nome, at ? fNegrito : fNormal,
+                            new Rectangle(r.X + E(38), r.Y, r.Width - E(46), r.Height), novo ? cFraco : cTexto, TF);
+                        if (!novo && arrastoApp != null && arrastoApp.P == pp) Fundo(g, r, Color.FromArgb(150, cCartao), E(4));
+                    }
+                    if (pp != null && listaAb >= 0.99f) chips.Add(new KeyValuePair<Rectangle, Perfil>(r, pp));
+                    yi += hL;
                 }
-                x += cw + gap;
+                if (g != null) g.Restore(est);
+                y += E(4) + hVis;
             }
-            y += hC + E(14);
+            y += E(14);
         }
 
         // Saidas
@@ -3086,7 +3095,7 @@ class Painel : Form
             foreach (var kv in chips)
             {
                 var c = kv.Key;
-                bool antes = c.Bottom + E(3) < p.Y || (p.Y >= c.Top - E(3) && p.Y <= c.Bottom + E(3) && c.Left + c.Width / 2 < p.X);
+                bool antes = p.Y > c.Top + c.Height / 2;
                 if (antes) arrastoIndice++;
             }
         }
@@ -3223,10 +3232,10 @@ class Painel : Form
         var p = PointToClient(Cursor.Position);
         if (arrastoApp.P != null && arrastoIndice >= 0 && chips.Count > 0)
         {
-            // barrinha vertical mostrando onde o perfil vai ficar
+            // linha mostrando onde o perfil vai ficar
             Rectangle c = arrastoIndice < chips.Count ? chips[arrastoIndice].Key : chips[chips.Count - 1].Key;
-            int xl = arrastoIndice < chips.Count ? c.Left - E(5) : c.Right + E(2);
-            Fundo(g, new Rectangle(xl, c.Top, Math.Max(2, E(3)), c.Height), cAcento, E(2));
+            int yl = arrastoIndice < chips.Count ? c.Top - E(2) : c.Bottom - E(1);
+            Fundo(g, new Rectangle(c.X + E(8), yl, c.Width - E(16), Math.Max(2, E(3))), cAcento, E(1.5f));
         }
         else if (arrastoApp.G == null && arrastoApp.D != null && arrastoIndice >= 0)
         {
@@ -3369,8 +3378,9 @@ class Painel : Form
                     Montar(null); Posicionar(); Invalidate();
                 }
                 break;
-            case Z_MAIS_PERFIS:
-                MenuMaisPerfis(z);
+            case Z_LISTA_PERFIS:
+                if (app.Perfis.Count == 0) { Clique(new Zona { Tipo = Z_NOVO_PERFIL, R = z.R }); break; }
+                AbrirListaPerfis(!listaPerfis);
                 break;
             case Z_TENTAR:
                 remotoFalhou = false; estadoRemoto = null; if (remoto != null) { remoto.Fechar(); remoto = null; }
@@ -3380,6 +3390,7 @@ class Painel : Form
                 MenuSaida(z);
                 break;
             case Z_PERFIL:
+                AbrirListaPerfis(false);
                 app.AplicarPerfil(z.P, false);
                 abertura.Clear();
                 vistaAlvo[0] = vistaAlvo[1] = false; vista[0] = vista[1] = 0f;
@@ -3388,6 +3399,7 @@ class Painel : Form
                 Depois(1200);
                 break;
             case Z_NOVO_PERFIL:
+                listaPerfis = false; listaAb = 0f;
                 Esconder();
                 app.NovoPerfil();
                 Mostrar();   // volta o painel depois de digitar o nome (ja com o perfil novo)
@@ -3439,31 +3451,13 @@ class Painel : Form
         m.Show(this, ptCliente, dir);
     }
 
-    // "+N": perfis que nao couberam na linha e o "novo perfil"
-    void MenuMaisPerfis(Zona z)
+    void AbrirListaPerfis(bool abrir)
     {
-        const string chave = "perfis-mais";
-        if (Alterna.FecharSeAberto(chave) || !Alterna.PodeAbrir(chave)) return;
-        var menu = new ContextMenuStrip { ShowImageMargin = false, ShowCheckMargin = true };
-        foreach (var pf in perfisFora)
-        {
-            var p = pf;
-            var it = new ToolStripMenuItem(p.Nome);
-            it.Click += (s, e) => Clique(new Zona { Tipo = Z_PERFIL, P = p, R = z.R });
-            menu.Items.Add(it);
-        }
-        if (app.Perfis.Count < App.MaxPerfis)
-        {
-            menu.Items.Add(new ToolStripSeparator());
-            var novo = new ToolStripMenuItem("Novo perfil com a configuração de agora…");
-            novo.Click += (s, e) => BeginInvoke(new Action(() => Clique(new Zona { Tipo = Z_NOVO_PERFIL, R = z.R })));
-            menu.Items.Add(novo);
-        }
-        app.AplicarTema(menu);
-        app.MenuAberto = true;
-        menu.Closed += (s, e) => { Alterna.Fechou(chave); app.MenuAberto = false; app.ConferirPainel(); };
-        Alterna.Abriu(chave, menu);
-        MostrarDentro(menu, new Point(z.R.Left, z.R.Bottom + E(4)), false);
+        if (listaPerfis == abrir) return;
+        listaPerfis = abrir;
+        if (app.Animacoes) { Animar(); return; }
+        listaAb = abrir ? 1f : 0f;
+        Montar(null); Posicionar(); AtualizarSobre(); Invalidate();
     }
 
     // Clique direito num perfil
