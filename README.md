@@ -27,6 +27,7 @@ O controle de volume do Windows esconde o que mais importa: trocar a saída (fon
 - **Aviso na tela** discreto ao usar os atalhos (não aparece por cima de jogos em tela cheia).
 - **Som tocando** (opcional): barrinhas animadas ao lado de cada saída e app mostram o som que está tocando, só com o painel aberto.
 - **Controlar outro PC da casa** (opcional, novo na 1.1): pareie o PC e o notebook com um código e mude o som de um pelo painel do outro. Veja [Outros PCs](#outros-pcs).
+- **Atualiza sozinho** (opcional, vem ligado): confere no GitHub a cada 12 h, baixa a versão nova, confere a **assinatura digital** e se atualiza quando você não está jogando em tela cheia. Veja [Atualizações](#atualizações).
 - **Tema claro/escuro** que segue o Windows, cantos arredondados, animações suaves (opcionais).
 - Funciona com monitores em **escalas diferentes** (ex.: 100% e 175%) e com a **barra de tarefas** fixa, que se esconde sozinha ou em qualquer lado da tela.
 - **Configurações** numa janela própria (Geral, Perfis, Atalhos, Dispositivos, Outros PCs), com tudo podendo ser ligado ou desligado.
@@ -83,6 +84,15 @@ No PC que está sendo controlado, o ícone do Sintonia perto do relógio ganha u
 
 **Desempenho:** nada é enviado no dia a dia. A conexão só abre quando o painel mostra o outro PC (uma atualização a cada 3 s) e fecha junto com o painel. Com "Pode ser controlado" ligado, o Sintonia fica só esperando, parado: **0 ms de CPU** e a mesma memória.
 
+### Atualizações
+
+A partir da 1.4 o Sintonia se atualiza sozinho em todos os PCs (dá para desligar em Configurações ▸ Geral ▸ Atualizações):
+
+- A cada 12 horas (e 90 s depois de abrir) ele pergunta ao GitHub qual é a última versão. Não manda nada sobre você nem sobre o PC.
+- Se houver versão nova, baixa o `Sintonia.exe` e a assinatura `Sintonia.exe.sig` da página de Releases e **confere a assinatura digital** (ECDSA P-256). A chave que assina fica só no PC de quem publica; a parte pública está no código. Um arquivo alterado, mesmo em 1 byte, é recusado.
+- Instala só quando não atrapalha: sem o painel ou menu abertos e **sem jogo em tela cheia** (senão tenta de novo em 5 minutos). Troca o `.exe`, reabre a versão nova e mostra um aviso rápido.
+- Desligado o "Atualizar sozinho", a versão nova aparece no menu do ícone e em Configurações para você instalar quando quiser.
+
 ### Linha de comando (opcional)
 
 | Comando | O que faz |
@@ -95,7 +105,7 @@ No PC que está sendo controlado, o ícone do Sintonia perto do relógio ganha u
 
 ## Privacidade
 
-- **Não usa internet.** A única parte de rede é **Outros PCs**, que vem desligada e só fala com PCs pareados da sua rede de casa.
+- **Quase não usa internet:** só a consulta de atualização ao GitHub (a cada 12 h, desligável), que não envia nada sobre você. **Outros PCs** vem desligado e só fala com PCs pareados da sua rede de casa.
 - Os atalhos usam o recurso oficial do Windows (`RegisterHotKey`). O programa **não lê o que você digita** nem vigia o mouse fora do painel.
 - Tudo o que é gravado: o arquivo `%APPDATA%\Sintonia.ini` (configurações), `%APPDATA%\Sintonia.log` (só se acontecer algum erro), a tarefa **"Sintonia"** no Agendador de Tarefas (iniciar com o Windows), a preferência do Windows que deixa o ícone fixado na barra e, se você ativar, o atalho no menu Iniciar.
 

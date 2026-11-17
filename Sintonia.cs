@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.3.1.0")]
-[assembly: AssemblyFileVersion("1.3.1.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 
 static class Program
 {
@@ -37,6 +37,7 @@ static class Program
     public static uint MsgAbrir, MsgConfig, MsgPerfil, MsgPedido;
     public static string ArqPedido { get { return Path.Combine(Path.GetTempPath(), "Sintonia_pedido.txt"); } }
     public static int PaginaInicial = -1;
+    public static bool Atualizado;   // aberto pelo atualizador (a copia antiga esta fechando)
 
     [STAThread]
     static void Main(string[] args)
@@ -66,6 +67,10 @@ static class Program
         if (args.Length == 2 && args[0] == "--testeopcoes") { App.TesteOpcoes(args[1]); return; }
         if (args.Length == 2 && args[0] == "--testerede") { TesteRede(args[1]); return; }
         if (args.Length == 1 && args[0] == "--apagar-identidade") { Rede.ApagarIdentidade(); return; }
+        // so para quem publica: assina o .exe de uma versao (chave que fica guardada neste PC)
+        if (args.Length == 2 && args[0] == "--assinar") { File.WriteAllText(args[1] + ".pub.txt", Atualizador.Assinar(args[1])); return; }
+        if (args.Length == 2 && args[0] == "--testeatualizar") { File.WriteAllLines(args[1], Atualizador.Teste()); return; }
+        if (args.Length >= 1 && args[0] == "--atualizado") { Atualizado = true; args = new string[0]; }
         if (args.Length == 2 && args[0] == "--testecontrole") { TesteControle(args[1]); return; }
         if (args.Length >= 1 && args[args.Length - 1] == "--so-local") { Rede.SoLocal = true; Array.Resize(ref args, args.Length - 1); }
         MsgAbrir = RegisterWindowMessage("Sintonia_AbrirPainel");
@@ -103,6 +108,11 @@ static class Program
         bool novo;
         using (var m = new Mutex(true, "Sintonia_Unico", out novo))
         {
+            if (!novo && Atualizado)
+            {
+                // a versao antiga ainda esta fechando: espera ela soltar
+                try { novo = m.WaitOne(20000); } catch (AbandonedMutexException) { novo = true; }
+            }
             if (!novo)
             {
                 // ja esta rodando: pede para a outra copia abrir o painel
@@ -4550,6 +4560,164 @@ class Remoto
 }
 
 // =====================================================================
+//  Atualizacao automatica (GitHub Releases), com assinatura digital
+//  - so aceita um .exe assinado pela chave de quem publica (a publica fica aqui no codigo)
+//  - nao manda nada sobre voce: so pergunta ao GitHub qual e a ultima versao
+// =====================================================================
+static class Atualizador
+{
+    public const string Repo = "oDethie/sintonia";
+    // chave publica (ECDSA P-256) de quem assina as versoes
+    const string ChavePublica = "RUNTMSAAAAD3tyNWHTtERezlVtajCtypF1fXGjhnAnlGYclxR/WIRNr7OefhP/3OIpvrlcH+2RcZ84dng7hY01OsdkxQj4JJ";
+    const string NomeChaveAssinatura = "Sintonia-Lancamentos";
+
+    public class Nova { public Version Versao; public string UrlExe, UrlSig; }
+
+    public static Version Atual
+    {
+        get { var v = Assembly.GetExecutingAssembly().GetName().Version; return new Version(v.Major, v.Minor, Math.Max(0, v.Build)); }
+    }
+
+    static HttpWebRequest Pedido(string url)
+    {
+        ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;   // TLS 1.2
+        var r = (HttpWebRequest)WebRequest.Create(url);
+        r.UserAgent = "Sintonia-Atualizador";        // nome generico, sem dados seus
+        r.Timeout = 20000; r.ReadWriteTimeout = 20000;
+        r.AllowAutoRedirect = true;
+        return r;
+    }
+
+    // pergunta ao GitHub a ultima versao; null se nao tiver nada mais novo (ou sem internet)
+    public static Nova Procurar()
+    {
+        var req = Pedido("https://api.github.com/repos/" + Repo + "/releases/latest");
+        req.Accept = "application/vnd.github+json";
+        string json;
+        using (var resp = req.GetResponse()) using (var sr = new StreamReader(resp.GetResponseStream())) json = sr.ReadToEnd();
+        var d = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
+        object o;
+        if ((d.TryGetValue("draft", out o) && o is bool && (bool)o) || (d.TryGetValue("prerelease", out o) && o is bool && (bool)o)) return null;
+        Version v;
+        if (!Version.TryParse(((string)d["tag_name"]).TrimStart('v', 'V'), out v)) return null;
+        v = new Version(v.Major, v.Minor, Math.Max(0, v.Build));
+        if (v <= Atual) return null;
+        var n = new Nova { Versao = v };
+        foreach (var a in (System.Collections.ArrayList)d["assets"])
+        {
+            var x = (Dictionary<string, object>)a;
+            string nome = (string)x["name"], url = (string)x["browser_download_url"];
+            if (!url.StartsWith("https://github.com/" + Repo + "/releases/download/", StringComparison.OrdinalIgnoreCase)) continue;
+            if (nome == "Sintonia.exe") n.UrlExe = url;
+            else if (nome == "Sintonia.exe.sig") n.UrlSig = url;
+        }
+        return n.UrlExe != null && n.UrlSig != null ? n : null;
+    }
+
+    public static byte[] Baixar(string url, int max)
+    {
+        using (var resp = Pedido(url).GetResponse())
+        using (var st = resp.GetResponseStream())
+        using (var ms = new MemoryStream())
+        {
+            var buf = new byte[65536]; int k;
+            while ((k = st.Read(buf, 0, buf.Length)) > 0)
+            {
+                ms.Write(buf, 0, k);
+                if (ms.Length > max) throw new IOException("arquivo grande demais");
+            }
+            return ms.ToArray();
+        }
+    }
+
+    public static bool AssinaturaOk(byte[] exe, byte[] sig)
+    {
+        try
+        {
+            using (var k = CngKey.Import(Convert.FromBase64String(ChavePublica), CngKeyBlobFormat.EccPublicBlob))
+            using (var e = new ECDsaCng(k)) { e.HashAlgorithm = CngAlgorithm.Sha256; return e.VerifyData(exe, sig); }
+        }
+        catch { return false; }
+    }
+
+    // baixa e confere tudo; devolve o .exe pronto (ou erro)
+    public static byte[] BaixarConferido(Nova n, out string erro)
+    {
+        erro = null;
+        var exe = Baixar(n.UrlExe, 8 * 1024 * 1024);
+        var sig = Baixar(n.UrlSig, 4096);
+        if (!AssinaturaOk(exe, sig)) { erro = "assinatura não confere"; return null; }
+        return exe;
+    }
+
+    // troca o .exe: o que esta rodando pode ser renomeado (nao apagado) no Windows
+    public static string Instalar(byte[] exe, string destino, Version esperada)
+    {
+        string dir = Path.GetDirectoryName(destino);
+        string novo = Path.Combine(dir, "Sintonia.novo.exe"), velho = Path.Combine(dir, "Sintonia.velho.exe");
+        try
+        {
+            File.WriteAllBytes(novo, exe);
+            Version vf;
+            if (!Version.TryParse(FileVersionInfo.GetVersionInfo(novo).FileVersion ?? "", out vf) ||
+                new Version(vf.Major, vf.Minor, Math.Max(0, vf.Build)) != esperada)
+            { File.Delete(novo); return "versão do arquivo não confere"; }
+            if (File.Exists(velho)) File.Delete(velho);
+            File.Move(destino, velho);
+            try { File.Move(novo, destino); }
+            catch { File.Move(velho, destino); throw; }
+            return null;
+        }
+        catch (Exception ex) { try { if (File.Exists(novo)) File.Delete(novo); } catch { } return ex.Message; }
+    }
+
+    public static void Limpar(string exe)
+    {
+        string dir = Path.GetDirectoryName(exe);
+        foreach (var f in new[] { "Sintonia.velho.exe", "Sintonia.novo.exe" })
+            try { string c = Path.Combine(dir, f); if (File.Exists(c)) File.Delete(c); } catch { }
+    }
+
+    // ---- para quem publica ----
+    public static string Assinar(string arquivo)
+    {
+        CngKey k = CngKey.Exists(NomeChaveAssinatura) ? CngKey.Open(NomeChaveAssinatura)
+            : CngKey.Create(CngAlgorithm.ECDsaP256, NomeChaveAssinatura, new CngKeyCreationParameters { ExportPolicy = CngExportPolicies.None, KeyUsage = CngKeyUsages.Signing });
+        using (k)
+        using (var e = new ECDsaCng(k))
+        {
+            e.HashAlgorithm = CngAlgorithm.Sha256;
+            if (File.Exists(arquivo)) File.WriteAllBytes(arquivo + ".sig", e.SignData(File.ReadAllBytes(arquivo)));
+            return Convert.ToBase64String(k.Export(CngKeyBlobFormat.EccPublicBlob));
+        }
+    }
+
+    // teste: procura, baixa, confere e instala numa copia (sem reiniciar)
+    public static IEnumerable<string> Teste()
+    {
+        var l = new List<string>();
+        try
+        {
+            string exe = Assembly.GetExecutingAssembly().Location;
+            l.Add("versão atual: " + Atual);
+            var n = Procurar();
+            if (n == null) { l.Add("nada mais novo no GitHub"); return l; }
+            l.Add("nova: " + n.Versao + "  " + n.UrlExe);
+            string erro;
+            var bin = BaixarConferido(n, out erro);
+            l.Add(bin == null ? "RECUSADO: " + erro : "baixado e assinatura ok (" + bin.Length + " bytes)");
+            if (bin == null) return l;
+            var falso = (byte[])bin.Clone(); falso[falso.Length / 2] ^= 1;
+            l.Add("arquivo alterado em 1 byte: " + (AssinaturaOk(falso, Baixar(n.UrlSig, 4096)) ? "ACEITO (ERRO)" : "recusado (ok)"));
+            string r = Instalar(bin, exe, n.Versao);
+            l.Add(r == null ? "instalado: " + FileVersionInfo.GetVersionInfo(exe).FileVersion : "falhou: " + r);
+        }
+        catch (Exception ex) { l.Add("ERRO " + ex.Message); }
+        return l;
+    }
+}
+
+// =====================================================================
 //  App
 // =====================================================================
 class App : ApplicationContext
@@ -4579,6 +4747,11 @@ class App : ApplicationContext
 
     // ---- outros PCs (controle pela rede) ----
     public bool Controlador;                 // este PC controla outros (padrao: desligado)
+    public bool AtualizarSozinho = true;
+    public string EstadoAtualizacao = "";     // texto para as Configuracoes
+    Atualizador.Nova novaVersao; byte[] novaBin;
+    readonly Timer tAtualizacao = new Timer { Interval = 90 * 1000 };   // 1a vez 90 s depois de abrir; depois a cada 12 h
+    bool procurandoAtualizacao;
     bool receptorLigado;                     // outros PCs podem controlar este (padrao: desligado)
     public string MeuId;
     readonly List<ParPC> pares = new List<ParPC>();
@@ -4716,6 +4889,17 @@ class App : ApplicationContext
             else ConferirInicio();
         }) { IsBackground = true, Priority = ThreadPriority.Lowest }.Start();
         if (primeiraVez) SalvarConfig();
+
+        // atualizacao automatica
+        try { Atualizador.Limpar(Application.ExecutablePath); } catch { }
+        tAtualizacao.Tick += (s, e) => { tAtualizacao.Interval = 12 * 3600 * 1000; ProcurarAtualizacao(false); };
+        if (AtualizarSozinho) tAtualizacao.Start();
+        if (Program.Atualizado)
+        {
+            var tAv = new Timer { Interval = 2500 };
+            tAv.Tick += (s, e) => { tAv.Stop(); tAv.Dispose(); Avisar('\uE895', "Sintonia atualizado para " + Atualizador.Atual.ToString(3)); };
+            tAv.Start();
+        }
     }
 
     void Postar(Action a)
@@ -5272,6 +5456,12 @@ class App : ApplicationContext
         if (UsarPerfis) menu.Items.Add(mPerfis);
 
         menu.Items.Add(new ToolStripSeparator());
+        if (TemNovaVersao)
+        {
+            var mAt = new ToolStripMenuItem("Atualizar para a versão " + NovaVersaoTexto);
+            mAt.Click += (s, e) => Postar(() => TentarInstalar(true));
+            menu.Items.Add(mAt);
+        }
         var mConf = new ToolStripMenuItem("Configurações…");
         mConf.Click += (s, e) => Postar(AbrirConfiguracoes);
         menu.Items.Add(mConf);
@@ -5313,6 +5503,72 @@ class App : ApplicationContext
         }
     }
     public bool ReceptorAtivo { get { return servidor != null && servidor.Ligado; } }
+
+    // =================== atualizacao ===================
+    public void DefinirAtualizarSozinho(bool v)
+    {
+        AtualizarSozinho = v; SalvarConfig();
+        if (v) { tAtualizacao.Interval = 90 * 1000; tAtualizacao.Start(); } else tAtualizacao.Stop();
+    }
+
+    // agora: o pedido veio da pessoa (botao), entao instala sem esperar
+    public void ProcurarAtualizacao(bool agora)
+    {
+        if (procurandoAtualizacao) return;
+        if (novaVersao != null && novaBin != null) { TentarInstalar(agora); return; }
+        procurandoAtualizacao = true;
+        EstadoAtualizacao = "Procurando…"; AtualizarConfig();
+        new Thread(() =>
+        {
+            Atualizador.Nova n = null; byte[] bin = null; string erro = null;
+            try
+            {
+                n = Atualizador.Procurar();
+                if (n != null) bin = Atualizador.BaixarConferido(n, out erro);
+            }
+            catch (Exception ex) { erro = ex is WebException ? "sem conexão" : ex.Message; }
+            Postar(() =>
+            {
+                procurandoAtualizacao = false;
+                if (n == null) EstadoAtualizacao = erro != null ? "Não deu para conferir (" + erro + ")" : "Você está na versão mais nova";
+                else if (bin == null) EstadoAtualizacao = "Versão " + n.Versao + " recusada: " + erro;
+                else
+                {
+                    novaVersao = n; novaBin = bin;
+                    EstadoAtualizacao = "Versão " + n.Versao.ToString(3) + " pronta";
+                    if (AtualizarSozinho || agora) TentarInstalar(agora);
+                }
+                AtualizarConfig();
+            });
+        }) { IsBackground = true, Priority = ThreadPriority.Lowest }.Start();
+    }
+
+    public bool TemNovaVersao { get { return novaVersao != null && novaBin != null; } }
+    public string NovaVersaoTexto { get { return novaVersao == null ? "" : novaVersao.Versao.ToString(3); } }
+
+    // instala so quando nao atrapalha: sem painel/menu/configuracoes abertos e sem jogo em tela cheia
+    public void TentarInstalar(bool agora)
+    {
+        if (!TemNovaVersao) return;
+        bool ocupado = painel.Visible || MenuAberto || TelaCheiaAtiva() || (!agora && config != null && !config.IsDisposed);
+        if (ocupado && !agora)
+        {
+            var t = new Timer { Interval = 5 * 60 * 1000 };
+            t.Tick += (s, e) => { t.Stop(); t.Dispose(); TentarInstalar(false); };
+            t.Start();
+            return;
+        }
+        string exe = Application.ExecutablePath;
+        string r = Atualizador.Instalar(novaBin, exe, novaVersao.Versao);
+        if (r != null) { EstadoAtualizacao = "Não deu para instalar (" + r + ")"; AtualizarConfig(); return; }
+        // abre a versao nova e fecha esta
+        SalvarConfig();
+        if (servidor != null) servidor.Desligar();
+        vigia.Parar();
+        icone.Visible = false;
+        try { Process.Start(exe, "--atualizado"); } catch { }
+        Application.Exit();
+    }
 
     // ---- quem esta controlando este PC agora (so enquanto o painel do outro mostra este) ----
     readonly Dictionary<int, string> sessoes = new Dictionary<int, string>();
@@ -5944,6 +6200,7 @@ class App : ApplicationContext
                     case "som": MostrarSom = v == "1"; break;
                     case "fixar": FixarBandeja = v == "1"; break;
                     case "controlador": Controlador = v == "1"; break;
+                    case "atualizar": AtualizarSozinho = v == "1"; break;
                     case "receptor": receptorLigado = v == "1"; break;
                     case "id_pc": if (v.Length >= 16) MeuId = v; break;
                     case "par":
@@ -6050,7 +6307,7 @@ class App : ApplicationContext
                 "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
-            l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0));
+            l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0)); l.Add("atualizar=" + (AtualizarSozinho ? 1 : 0));
             if (MeuId != null) l.Add("id_pc=" + MeuId);
             lock (pares)
                 foreach (var pc in pares)
@@ -6469,6 +6726,13 @@ class Configuracoes : Form
             });
             Chave("Iniciar com o Windows", "Abre o Sintonia sozinho quando você entra no Windows", () => app.IniciaComWindows(), v => app.AlternarInicio());
             Chave("Atalho no menu Iniciar", "Cria um atalho para achar o Sintonia pesquisando no menu Iniciar", () => App.TemAtalhoIniciar(), v => App.AlternarAtalhoIniciar());
+
+            Cab("Atualizações");
+            Chave("Atualizar sozinho", "A cada 12 horas confere no GitHub se há versão nova. Se houver, baixa, confere a assinatura digital e se atualiza quando você não estiver jogando em tela cheia",
+                () => app.AtualizarSozinho, v => app.DefinirAtualizarSozinho(v));
+            Botao(app.TemNovaVersao ? "Atualizar agora para a versão " + app.NovaVersaoTexto : "Procurar atualização agora",
+                "Versão instalada: " + Atualizador.Atual.ToString(3) + (app.EstadoAtualizacao.Length > 0 ? " · " + app.EstadoAtualizacao : ""),
+                () => "", r => app.ProcurarAtualizacao(true), '\uE895');
         }
         else if (pagina == 1)
         {

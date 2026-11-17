@@ -5,3 +5,7 @@
 # Arquivos do sistema
 Thumbs.db
 desktop.ini
+*.sig
+*.pub.txt
+*.velho.exe
+*.novo.exe
