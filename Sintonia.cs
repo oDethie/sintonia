@@ -8,6 +8,11 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -19,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.0.3.0")]
-[assembly: AssemblyFileVersion("1.0.3.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 static class Program
 {
@@ -59,6 +64,10 @@ static class Program
         if (args.Length == 3 && args[0] == "--autoteste") { AutoTeste(args[1], args[2]); return; }
         if (args.Length == 5 && args[0] == "--testemover") { TesteMover(args[1], args[2], args[3], args[4]); return; }
         if (args.Length == 2 && args[0] == "--testeopcoes") { App.TesteOpcoes(args[1]); return; }
+        if (args.Length == 2 && args[0] == "--testerede") { TesteRede(args[1]); return; }
+        if (args.Length == 1 && args[0] == "--apagar-identidade") { Rede.ApagarIdentidade(); return; }
+        if (args.Length == 2 && args[0] == "--testecontrole") { TesteControle(args[1]); return; }
+        if (args.Length >= 1 && args[args.Length - 1] == "--so-local") { Rede.SoLocal = true; Array.Resize(ref args, args.Length - 1); }
         MsgAbrir = RegisterWindowMessage("Sintonia_AbrirPainel");
         MsgConfig = RegisterWindowMessage("Sintonia_AbrirConfig");
         MsgPerfil = RegisterWindowMessage("Sintonia_AtivarPerfil");
@@ -112,6 +121,150 @@ static class Program
             Application.ThreadException += (s, e) => Log(e.Exception);
             Application.Run(new App());
         }
+    }
+
+    // ---- teste do protocolo (tudo no proprio PC, porta aleatoria so local) ----
+    static void TesteRede(string arq)
+    {
+        var o = new List<string>();
+        Action<string, bool> ok = (n, b) => o.Add((b ? "OK    " : "FALHA ") + n);
+        var tl = new TcpListener(IPAddress.Loopback, 0); tl.Start();
+        int porta = ((IPEndPoint)tl.LocalEndpoint).Port;
+        string idServ = "servidor-teste-0000", idCli = "cliente-teste-0000";
+        string pubMinha = Convert.ToBase64String(Rede.MinhaChavePublica());
+        string codigo = null; int erros = 0; ParPC pareadoServ = null;
+        var pares = new Dictionary<string, ParPC>();
+        Func<Canal, ParPC> atender = c => c.AtenderServidor(idServ, "Servidor", id => { ParPC x; return pares.TryGetValue(id, out x) ? x : null; }, () => true,
+            () => codigo != null && erros < 3 ? codigo : null, () => { erros++; if (erros >= 3) codigo = null; }, pp => { pareadoServ = pp; codigo = null; });
+        Func<Func<Canal, string>, Func<Canal, string>, string[]> rodar = (cli, srv) =>
+        {
+            string rs = null;
+            var t = new Thread(() => { try { using (var c = new Canal(tl.AcceptTcpClient())) rs = srv(c); } catch (Exception ex) { rs = "erro: " + ex.Message; } });
+            t.Start();
+            string rc;
+            try { using (var c = Canal.Conectar("127.0.0.1", 2000, porta)) rc = cli(c); } catch (Exception ex) { rc = "erro: " + ex.Message; }
+            t.Join(8000);
+            return new[] { rc, rs };
+        };
+        try
+        {
+            // 1) pareamento sem codigo gerado: recusado
+            var r = rodar(c => { c.ParearCliente(idCli, "Cliente", "ABCD-EFGH"); return "pareou"; }, c => { atender(c); return "ok"; });
+            ok("parear sem código gerado é recusado (" + r[0] + ")", r[0].StartsWith("erro"));
+            // 2) codigo errado 3x -> codigo invalida
+            codigo = Rede.NovoCodigo(); erros = 0;
+            string certo = codigo;
+            for (int i = 0; i < 3; i++)
+            {
+                r = rodar(c => { c.ParearCliente(idCli, "Cliente", "2222-2222"); return "pareou"; }, c => { atender(c); return "ok"; });
+                ok("código errado " + (i + 1) + " é recusado (" + r[0] + ")", r[0].StartsWith("erro") && pareadoServ == null);
+            }
+            r = rodar(c => { c.ParearCliente(idCli, "Cliente", certo); return "pareou"; }, c => { atender(c); return "ok"; });
+            ok("depois de 3 erros, nem o código certo vale (" + r[0] + ")", r[0].StartsWith("erro") && pareadoServ == null);
+            // 3) codigo certo
+            codigo = Rede.NovoCodigo(); erros = 0; certo = codigo;
+            ParPC parCli = null;
+            r = rodar(c => { parCli = c.ParearCliente(idCli, "Cliente", certo.ToLowerInvariant().Replace("-", " ")); return "pareou"; }, c => { atender(c); return "ok"; });
+            ok("código certo pareia (" + r[0] + ")", r[0] == "pareou" && pareadoServ != null && parCli != null && parCli.Id == idServ && pareadoServ.Id == idCli);
+            ok("chaves trocadas conferem", parCli != null && parCli.ChavePub == pubMinha && pareadoServ != null && pareadoServ.ChavePub == pubMinha);
+            ok("código só vale uma vez", codigo == null);
+            // 4) sessao com par conhecido + mensagens cifradas
+            pares[idCli] = pareadoServ;
+            r = rodar(c => { c.SessaoCliente(idCli, parCli); c.Enviar("olá ção"); return c.Receber(); },
+                      c => { var pp = atender(c); if (pp == null) return "sem sessão"; var m = c.Receber(); c.Enviar("eco:" + m); return "ok"; });
+            ok("sessão cifrada ida e volta (" + r[0] + ")", r[0] == "eco:olá ção" && r[1] == "ok");
+            // 5) PC nao pareado: recusado
+            r = rodar(c => { c.SessaoCliente("intruso", parCli); return "abriu"; }, c => { var pp = atender(c); return pp == null ? "recusou" : "aceitou"; });
+            ok("PC não pareado é recusado (" + r[0] + " / " + r[1] + ")", r[0].StartsWith("erro") && r[1] == "recusou");
+            // 6) identidade falsa (outra chave publica esperada): cliente recusa
+            var falso = new ParPC { Id = idServ, Nome = "x", ChavePub = Convert.ToBase64String(FalsaChave()) };
+            r = rodar(c => { c.SessaoCliente(idCli, falso); return "abriu"; }, c => { var pp = atender(c); return pp == null ? "recusou" : "aceitou"; });
+            ok("servidor com chave diferente é recusado (" + r[0] + ")", r[0].StartsWith("erro"));
+            // 7) servidor espera outra chave do cliente: recusa a prova
+            pares[idCli] = new ParPC { Id = idCli, ChavePub = Convert.ToBase64String(FalsaChave()), MeControla = true };
+            r = rodar(c => { c.SessaoCliente(idCli, parCli); return "abriu"; }, c => { var pp = atender(c); return pp == null ? "recusou" : "aceitou"; });
+            ok("cliente com chave diferente é recusado (" + r[0] + " / " + r[1] + ")", r[1] == "recusou" && r[0] != "abriu");
+            pares[idCli] = pareadoServ;
+            // 8) mensagem alterada no caminho e mensagem repetida
+            r = rodar(c =>
+            {
+                c.SessaoCliente(idCli, parCli);
+                var x = c.Selar("volume 100");
+                x[x.Length - 40] ^= 1;
+                c.EnviarBruto(x);
+                return "enviou";
+            }, c => { atender(c); try { c.Receber(); return "aceitou"; } catch (Exception ex) { return "recusou: " + ex.Message; } });
+            ok("mensagem alterada é recusada (" + r[1] + ")", r[1].StartsWith("recusou"));
+            r = rodar(c =>
+            {
+                c.SessaoCliente(idCli, parCli);
+                var x = c.Selar("mudo");
+                c.EnviarBruto(x); c.EnviarBruto(x);
+                return "enviou";
+            }, c => { atender(c); c.Receber(); try { c.Receber(); return "aceitou repetida"; } catch (Exception ex) { return "recusou: " + ex.Message; } });
+            ok("mensagem repetida é recusada (" + r[1] + ")", r[1].StartsWith("recusou"));
+            // 9) o que vai pela rede nao tem o texto
+            r = rodar(c => { c.SessaoCliente(idCli, parCli); var x = c.Selar("segredo-segredo-segredo"); return Rede.S(x).Contains("segredo") ? "visível" : "cifrado"; },
+                      c => { atender(c); return "ok"; });
+            ok("conteúdo vai cifrado (" + r[0] + ")", r[0] == "cifrado");
+            ok("endereço da internet é recusado", !Rede.EhRedeLocal(IPAddress.Parse("8.8.8.8")) && Rede.EhRedeLocal(IPAddress.Loopback));
+            ok("código tem 8 caracteres sem 0/O/1/I/L", Rede.NormalizarCodigo(Rede.NovoCodigo()).Length == 8 && Rede.NovoCodigo().IndexOfAny("01OIL".ToCharArray()) < 0);
+        }
+        catch (Exception ex) { o.Add("ERRO " + ex); }
+        tl.Stop();
+        File.WriteAllLines(arq, o);
+    }
+    static byte[] FalsaChave()
+    {
+        using (var k = CngKey.Create(CngAlgorithm.ECDsaP256)) return k.Export(CngKeyBlobFormat.EccPublicBlob);
+    }
+
+    // ---- teste de controle: este processo controla o Sintonia aberto (pareado consigo mesmo) ----
+    static void TesteControle(string arq)
+    {
+        var o = new List<string>();
+        try
+        {
+            string id = null;
+            foreach (var l in File.ReadAllLines(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Sintonia.ini")))
+                if (l.StartsWith("id_pc=")) id = l.Substring(6);
+            var par = new ParPC { Id = id, Nome = "eu", ChavePub = Convert.ToBase64String(Rede.MinhaChavePublica()), UltimoIP = "127.0.0.1" };
+            var sw = Stopwatch.StartNew();
+            using (var c = Canal.Conectar("127.0.0.1", 2000))
+            {
+                c.SessaoCliente(id, par);
+                o.Add("sessão aberta em " + sw.ElapsedMilliseconds + " ms");
+                sw.Restart();
+                string est = c.Enviar2("estado");
+                o.Add("estado em " + sw.ElapsedMilliseconds + " ms, " + est.Length + " bytes:");
+                foreach (var l in est.Split('\n')) if (l.Length > 0) o.Add("   " + l);
+                string padrao = null, vol = null, mudo = null, exe = null, dev = null, volA = null;
+                foreach (var l in est.Split('\n'))
+                {
+                    var x = l.Split('\t');
+                    if (x[0] == "D" && x[1] == "0" && x[5] == "1") { padrao = x[2]; vol = x[6]; mudo = x[7]; }
+                    if (x[0] == "A" && x[8] == "0" && exe == null) { dev = x[1]; exe = x[2]; volA = x[4]; }
+                }
+                o.Add("vold (mesmo valor) -> " + c.Enviar2("vold\t" + padrao + "\t" + vol));
+                o.Add("mudod 1 -> " + c.Enviar2("mudod\t" + padrao + "\t1"));
+                o.Add("mudod volta -> " + c.Enviar2("mudod\t" + padrao + "\t" + mudo));
+                o.Add("padrao (mesmo) -> " + c.Enviar2("padrao\t" + padrao));
+                o.Add("padrao inexistente -> " + c.Enviar2("padrao\t{xyz}"));
+                o.Add("comando desconhecido -> " + c.Enviar2("apagar\ttudo"));
+                if (exe != null)
+                {
+                    o.Add("vola " + exe + " (mesmo) -> " + c.Enviar2("vola\t" + dev + "\t" + exe + "\t" + volA));
+                    string ic = c.Enviar2("icone\t" + exe);
+                    o.Add("icone " + exe + " -> " + ic.Length + " caracteres base64");
+                }
+                o.Add("icone de arquivo qualquer -> '" + c.Enviar2("icone\tC:\\Windows\\notepad.exe") + "'");
+                sw.Restart();
+                for (int i = 0; i < 20; i++) c.Enviar2("vold\t" + padrao + "\t" + vol);
+                o.Add("20 mudanças de volume em " + sw.ElapsedMilliseconds + " ms");
+            }
+        }
+        catch (Exception ex) { o.Add("ERRO " + ex); }
+        File.WriteAllLines(arq, o);
     }
 
     public static void Log(Exception ex)
@@ -403,6 +556,7 @@ class GrupoApp
     public List<uint> Pids = new List<uint>();
     public List<object> Rcws = new List<object>();
     public List<IAudioMeterInformation> Medidores = new List<IAudioMeterInformation>();
+    public bool Remoto;          // app do outro PC (controle pela rede)
 }
 
 class Perfil
@@ -1380,7 +1534,9 @@ class JanelaTexto : JanelaBase
     readonly TextBox caixa;
     public string Valor { get { return caixa.Text.Trim(); } }
 
-    public JanelaTexto(string titulo, string dica, string valor, bool temaEscuro) : base(temaEscuro)
+    public JanelaTexto(string titulo, string dica, string valor, bool temaEscuro) : this(titulo, dica, valor, temaEscuro, "Salvar", 40) { }
+
+    public JanelaTexto(string titulo, string dica, string valor, bool temaEscuro, string textoOk, int max) : base(temaEscuro)
     {
         ClientSize = new Size(E(420), E(210));
         int x = E(24), w = ClientSize.Width - E(48), y = E(20);
@@ -1391,12 +1547,12 @@ class JanelaTexto : JanelaBase
         caixa = new TextBox
         {
             Text = valor ?? "", Font = fNormal, Location = new Point(x, y), Width = w,
-            BackColor = cTecla, ForeColor = cTexto, BorderStyle = BorderStyle.FixedSingle, MaxLength = 40
+            BackColor = cTecla, ForeColor = cTexto, BorderStyle = BorderStyle.FixedSingle, MaxLength = max
         };
         Controls.Add(caixa);
 
         var rodape = Rodape();
-        var bSalvar = Botao("Salvar", true);
+        var bSalvar = Botao(textoOk, true);
         var bCancelar = Botao("Cancelar", false);
         int by = (rodape.Height - E(34)) / 2;
         bSalvar.Location = new Point(rodape.Width - E(24) - bSalvar.Width, by);
@@ -1744,7 +1900,116 @@ class Painel : Form
     readonly List<KeyValuePair<Rectangle, Perfil>> chips = new List<KeyValuePair<Rectangle, Perfil>>();
 
     class Zona { public Rectangle R; public int Tipo; public Disp D; public GrupoApp G; public Perfil P; public int F; public string Id; }
-    const int Z_RECOLHER = 10, Z_NOME_A = 11, Z_ESCONDIDOS = 12, Z_MOSTRAR = 13, Z_USAR = 14;
+    const int Z_RECOLHER = 10, Z_NOME_A = 11, Z_ESCONDIDOS = 12, Z_MOSTRAR = 13, Z_USAR = 14, Z_PC = 15, Z_TENTAR = 16;
+
+    // ---- outro PC (controle pela rede) ----
+    public ParPC Alvo;                 // null = este PC
+    Remoto remoto;
+    string estadoRemoto;
+    bool remotoFalhou, pedindoEstado;
+    readonly Dictionary<string, Bitmap> iconesRem = new Dictionary<string, Bitmap>();
+    readonly HashSet<string> iconesPedidos = new HashSet<string>();
+    readonly Dictionary<string, string> pendentes = new Dictionary<string, string>();
+    readonly HashSet<string> enviando = new HashSet<string>();
+    static string Txt(string x) { return (x ?? "").Replace("\t", " ").Replace("\n", " ").Replace("\r", " "); }
+    static string Num(float v) { return v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture); }
+
+    void GarantirRemoto()
+    {
+        if (Alvo == null) return;
+        if (remoto == null || remoto.Par != Alvo) { if (remoto != null) remoto.Fechar(); remoto = new Remoto(app, Alvo, this); }
+    }
+
+    void PedirEstado()
+    {
+        if (Alvo == null || pedindoEstado) return;
+        GarantirRemoto();
+        pedindoEstado = true;
+        var alvo = Alvo;
+        remoto.Pedir("estado", r =>
+        {
+            pedindoEstado = false;
+            if (alvo != Alvo) return;
+            if (r == null) { remotoFalhou = true; } else { remotoFalhou = false; estadoRemoto = r; }
+            Recarregar();
+        });
+    }
+
+    // envia um comando; varios iguais seguidos (ex.: arrastando a barra) viram so o ultimo
+    void EnviarRemoto(string chave, string comando, bool recarregarDepois)
+    {
+        GarantirRemoto();
+        pendentes[chave] = comando;
+        if (enviando.Contains(chave)) return;
+        Action proximo = null;
+        proximo = () =>
+        {
+            string c;
+            if (!pendentes.TryGetValue(chave, out c)) { enviando.Remove(chave); return; }
+            pendentes.Remove(chave);
+            enviando.Add(chave);
+            remoto.Pedir(c, r =>
+            {
+                enviando.Remove(chave);
+                if (pendentes.ContainsKey(chave)) proximo();
+                else if (recarregarDepois) { var t = new Timer { Interval = 400 }; t.Tick += (s2, e2) => { t.Stop(); t.Dispose(); PedirEstado(); }; t.Start(); }
+            });
+        };
+        proximo();
+    }
+
+    // monta saidas/entradas a partir do estado recebido do outro PC
+    void LerEstadoRemoto(out List<Disp> sa, out List<Disp> en)
+    {
+        sa = new List<Disp>(); en = new List<Disp>();
+        if (estadoRemoto == null) return;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var porId = new Dictionary<string, Disp>();
+        foreach (var l in estadoRemoto.Split('\n'))
+        {
+            var c = l.Split('\t');
+            try
+            {
+                if (c[0] == "D" && c.Length >= 8)
+                {
+                    var d = new Disp { Fluxo = int.Parse(c[1]), Id = c[2], NomeOriginal = c[3], Forma = int.Parse(c[4]), Padrao = c[5] == "1",
+                                       Vol = float.Parse(c[6], inv), Mudo = c[7] == "1" };
+                    string ren; d.Nome = app.Nomes.TryGetValue(d.Id, out ren) ? ren : d.NomeOriginal;
+                    if (c.Length > 8) d.Adaptador = c[8];
+                    porId[d.Id] = d;
+                    if (d.Fluxo == 0) sa.Add(d); else if (app.Mics) en.Add(d);
+                }
+                else if (c[0] == "A" && c.Length >= 9)
+                {
+                    Disp d;
+                    if (!porId.TryGetValue(c[1], out d)) continue;
+                    var a = new GrupoApp { Remoto = true, Exe = c[2], Nome = c[3], Vol = float.Parse(c[4], inv), Mudo = c[5] == "1", Ativo = c[6] == "1",
+                                           Saida = c[7].Length == 0 ? null : c[7], Sistema = c[8] == "1" };
+                    d.Apps.Add(a);
+                }
+            }
+            catch { }
+        }
+    }
+
+    Bitmap IconeRemoto(GrupoApp a)
+    {
+        if (Alvo == null || a.Sistema) return null;
+        string k = Alvo.Id + "|" + a.Exe;
+        Bitmap b;
+        if (iconesRem.TryGetValue(k, out b)) return b;
+        if (iconesPedidos.Add(k))
+        {
+            GarantirRemoto();
+            remoto.Pedir("icone\t" + a.Exe, r =>
+            {
+                try { if (!string.IsNullOrEmpty(r) && r != "ok") using (var ms = new MemoryStream(Convert.FromBase64String(r))) iconesRem[k] = new Bitmap(ms); }
+                catch { }
+                Invalidate();
+            });
+        }
+        return null;
+    }
     // itens escondidos de cada secao (0 = saidas, 1 = microfones)
     class Esc { public string Id, Nome; public char Glifo; }
     readonly List<Esc>[] escondidos = { new List<Esc>(), new List<Esc>() };
@@ -1772,6 +2037,7 @@ class Painel : Form
             if (!Visible || arrastando != null || arrastoApp != null || app.MenuAberto || fechando) return;
             // leve: a cada 1,5 s so confere os volumes que ja estao na tela; a lista inteira so a cada 6 s
             // (apps novos e saidas ligadas/desligadas ja chegam na hora pelos avisos do Windows)
+            if (Alvo != null) { if (++ticks % 2 == 0) PedirEstado(); return; }   // outro PC: a cada 3 s
             if (++ticks % 4 == 0) Recarregar(); else AtualizarValores();
         };
         tAnim.Tick += (s, e) => PassoAnimacao();
@@ -1917,6 +2183,7 @@ class Painel : Form
         SetForegroundWindow(Handle);
         Activate();
         tRecarregar.Start();
+        if (Alvo != null) { estadoRemoto = null; remotoFalhou = false; PedirEstado(); }
         if (app.Animacoes) Animar();
         if (app.MostrarSom) tSom.Start();
     }
@@ -2040,6 +2307,8 @@ class Painel : Form
         if (!Visible) return;
         tSom.Stop();
         historico.Clear();
+        if (remoto != null) { remoto.Fechar(); remoto = null; }   // fechou o painel: desconecta do outro PC
+        pedindoEstado = false; pendentes.Clear(); enviando.Clear();
         fechando = false;
         tAnim.Stop();
         Hide();
@@ -2055,10 +2324,12 @@ class Painel : Form
     void Carregar()
     {
         var antS = saidas; var antE = entradas;
-        saidas = Audio.Listar(0, true, app.Inativos, app.Nomes);
+        List<Disp> remS = null, remE = null;
+        if (Alvo != null) LerEstadoRemoto(out remS, out remE);
+        saidas = Alvo != null ? remS : Audio.Listar(0, true, app.Inativos, app.Nomes);
         escondidos[0].Clear(); escondidos[1].Clear();
         saidas.RemoveAll(d => !d.Padrao && app.Ocultos.Contains(d.Id) && Guardar(d) && Soltar(d));
-        entradas = app.Mics ? Audio.Listar(1, false, false, app.Nomes) : new List<Disp>();
+        entradas = Alvo != null ? remE : app.Mics ? Audio.Listar(1, false, false, app.Nomes) : new List<Disp>();
         entradas.RemoveAll(d => !d.Padrao && app.Ocultos.Contains(d.Id) && Guardar(d) && Soltar(d));
         var tocando = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var d in saidas) foreach (var g in d.Apps) if (g.Ativo && !g.Sistema) tocando.Add(g.Exe);
@@ -2181,7 +2452,7 @@ class Painel : Form
         Add(rMenu, Z_MENU, null, null, null);
         if (g != null)
         {
-            string sub = app.UsarPerfis && app.PerfilAtivo != null ? "  ·  " + app.PerfilAtivo : "";
+            string sub = Alvo != null ? "  ·  " + Alvo.Nome : app.UsarPerfis && app.PerfilAtivo != null ? "  ·  " + app.PerfilAtivo : "";
             if (app.MostrarLogo)
             {
                 int lg = E(22);
@@ -2200,8 +2471,41 @@ class Painel : Form
         if (g != null) using (var pn = new Pen(cBorda)) g.DrawLine(pn, pad + E(4), y, W - pad - E(4), y);
         y += E(10);
 
-        // Perfis (botoes)
-        if (app.UsarPerfis)
+        // Abas: este PC e os PCs pareados (so quando "Controlar outros PCs" esta ligado)
+        if (Alvo != null && (!app.Controlador || app.ParPorId(Alvo.Id) == null)) { Alvo = null; if (remoto != null) { remoto.Fechar(); remoto = null; } }
+        var controlados = app.Controlados();
+        if (app.Controlador && controlados.Count > 0)
+        {
+            int x = pad, hC = E(30), gap = E(6);
+            var abas = new List<ParPC> { null }; abas.AddRange(controlados);
+            foreach (var pc in abas)
+            {
+                string txt = pc == null ? "Este PC" : pc.Nome;
+                int tw = TextRenderer.MeasureText(txt, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width;
+                int cw = Math.Min(W - pad * 2, tw + E(46));
+                if (x + cw > W - pad && x > pad) { x = pad; y += hC + gap; }
+                var r = new Rectangle(x, y, cw, hC);
+                zonas.Add(new Zona { R = r, Tipo = Z_PC, Id = pc == null ? "" : pc.Id });
+                if (g != null)
+                {
+                    bool ativo = (pc == null && Alvo == null) || (pc != null && Alvo != null && pc.Id == Alvo.Id);
+                    bool hov = sobre != null && sobre.Tipo == Z_PC && sobre.Id == (pc == null ? "" : pc.Id);
+                    Color fundo = ativo ? (hov ? ControlPaint.Light(cAcento, 0.1f) : cAcento) : (hov ? cHover : cCartao);
+                    using (var pth = Desenho.Arred(new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1), E(4)))
+                    {
+                        using (var b = new SolidBrush(fundo)) g.FillPath(b, pth);
+                        if (!ativo) using (var pn = new Pen(cBorda)) g.DrawPath(pn, pth);
+                    }
+                    TextRenderer.DrawText(g, (pc == null ? '\uE7F4' : '\uE7F8').ToString(), fGlifoP, new Rectangle(r.X + E(8), r.Y, E(20), r.Height), ativo ? cTextoAcento : cTexto, TC);
+                    TextRenderer.DrawText(g, txt, fNormal, new Rectangle(r.X + E(32), r.Y, r.Width - E(38), r.Height), ativo ? cTextoAcento : cTexto, TF);
+                }
+                x += cw + gap;
+            }
+            y += hC + E(12);
+        }
+
+        // Perfis (botoes) - sao deste PC
+        if (app.UsarPerfis && Alvo == null)
         {
             int x = pad, hC = E(30), gap = E(6);
             var lista = new List<Perfil>(app.Perfis);
@@ -2251,7 +2555,7 @@ class Painel : Form
         y = Corpo(g, 0, y, pad, W);
 
         // Microfones
-        if (app.Mics)
+        if (app.Mics && (Alvo == null || estadoRemoto != null))
         {
             y += E(6);
             y = Secao(g, "Entrada", y, pad, W, 1);
@@ -2307,6 +2611,25 @@ class Painel : Form
     int Normal(Graphics g, int f, int y, int pad, int W)
     {
         var lista = f == 0 ? saidas : entradas;
+        if (lista.Count == 0 && Alvo != null && f == 0)
+        {
+            if (remotoFalhou)
+            {
+                y = Vazio(g, "Não foi possível falar com " + Alvo.Nome + ".", y, pad, W);
+                if (g != null) TextRenderer.DrawText(g, "Ele está ligado e com \"Pode ser controlado\"?", fPequena,
+                    new Rectangle(pad + E(4), y - E(6), W - pad * 2, E(20)), cFraco, TF);
+                y += E(18);
+                var rt = new Rectangle(pad + E(4), y, E(130), E(30));
+                zonas.Add(new Zona { R = rt, Tipo = Z_TENTAR });
+                if (g != null)
+                {
+                    Fundo(g, rt, sobre != null && sobre.Tipo == Z_TENTAR ? cHover : cCartao, E(4));
+                    TextRenderer.DrawText(g, "Tentar de novo", fNormal, rt, cTexto, TC);
+                }
+                return y + E(40);
+            }
+            if (estadoRemoto == null) return Vazio(g, "Conectando a " + Alvo.Nome + "…", y, pad, W);
+        }
         if (lista.Count == 0) y = Vazio(g, f == 0 ? "Nenhuma saída de som ativa" : "Nenhum microfone ativo", y, pad, W);
         foreach (var d in lista) y = Cartao(g, d, y, pad, W);
         return y;
@@ -2507,7 +2830,7 @@ class Painel : Form
 
     void AppLinha(Graphics g, Disp d, GrupoApp a, int y, int x0, int cw, int colIcone, int xTexto, int h)
     {
-        bool movel = !a.Sistema && Politica.Disponivel && a.Pids.Count > 0;
+        bool movel = !a.Sistema && (a.Remoto || (Politica.Disponivel && a.Pids.Count > 0));
         var rLinha = new Rectangle(x0 + E(4), y, cw - E(8), h);
         // A linha inteira pode ser arrastada para outra saida (fica por baixo das outras zonas)
         if (movel) Add(rLinha, Z_NOME_A, d, a, null);
@@ -2534,7 +2857,7 @@ class Painel : Form
 
         if (Sobre(Z_MUDO_A, d, a, null)) Fundo(g, rIc, ControlPaint.Light(cHover, 0.1f), E(5));
         var rImg = new Rectangle(colIcone - ti / 2, rIc.Y + (rIc.Height - ti) / 2, ti, ti);
-        Bitmap bmp = a.Caminho != null ? Processos.Icone(a.Caminho, ti) : null;
+        Bitmap bmp = a.Caminho != null ? Processos.Icone(a.Caminho, ti) : a.Remoto ? IconeRemoto(a) : null;
         if (bmp != null)
         {
             if (a.Mudo)
@@ -2707,7 +3030,7 @@ class Painel : Form
             var alvo = arrastoAlvo;
             if (alvo != null && alvo != z.D)
             {
-                app.DefinirSaidaApp(z.G.Exe, z.G.Pids, alvo.Id);
+                SaidaApp(z.G, alvo.Id);
                 app.Abertos[alvo.Id] = true; abertura[alvo.Id] = 1f;
                 app.SalvarConfig();
                 Depois();
@@ -2774,7 +3097,7 @@ class Painel : Form
         var a = apertada; apertada = null;
         if (e.Button == MouseButtons.Right)
         {
-            if (z != null && z.G != null && !z.G.Sistema && z.G.Pids.Count > 0 && Politica.Disponivel) MenuSaida(z);
+            if (z != null && z.G != null && !z.G.Sistema && (z.G.Remoto || (z.G.Pids.Count > 0 && Politica.Disponivel))) MenuSaida(z);
             else if (z != null && z.Tipo == Z_PERFIL && z.P != null) MenuPerfil(z);
             else if (z != null && z.G == null && z.D != null) MenuDisp(z);
             else app.MostrarMenu(this, PointToClient(Cursor.Position));
@@ -2860,6 +3183,12 @@ class Painel : Form
     void AplicarDisp(Disp d, float v)
     {
         v = Math.Max(0f, Math.Min(1f, v));
+        if (Alvo != null)
+        {
+            d.Vol = v; if (v > 0) d.Mudo = false;
+            EnviarRemoto("vd|" + d.Id, "vold\t" + d.Id + "\t" + Num(v), false);
+            return;
+        }
         if (d.Ep == null) return;
         try
         {
@@ -2873,6 +3202,13 @@ class Painel : Form
     void AplicarApp(GrupoApp a, float v)
     {
         v = Math.Max(0f, Math.Min(1f, v));
+        if (a.Remoto)
+        {
+            a.Vol = v; if (v > 0) a.Mudo = false;
+            var d = saidas.Find(x => x.Apps.Contains(a));
+            if (d != null) EnviarRemoto("va|" + d.Id + "|" + a.Exe, "vola\t" + d.Id + "\t" + a.Exe + "\t" + Num(v), false);
+            return;
+        }
         foreach (var s in a.Vols)
             try
             {
@@ -2889,17 +3225,41 @@ class Painel : Form
         switch (z.Tipo)
         {
             case Z_MUDO_D:
+                if (Alvo != null) { z.D.Mudo = !z.D.Mudo; EnviarRemoto("md|" + z.D.Id, "mudod\t" + z.D.Id + "\t" + (z.D.Mudo ? 1 : 0), false); Invalidate(); break; }
                 if (z.D.Ep != null) try { z.D.Ep.SetMute(!z.D.Mudo, ref Audio.Ctx); z.D.Mudo = !z.D.Mudo; } catch { }
                 Invalidate();
                 break;
             case Z_MUDO_A:
+                if (z.G.Remoto)
+                {
+                    z.G.Mudo = !z.G.Mudo;
+                    EnviarRemoto("ma|" + z.D.Id + "|" + z.G.Exe, "mudoa\t" + z.D.Id + "\t" + z.G.Exe + "\t" + (z.G.Mudo ? 1 : 0), false);
+                    Invalidate(); break;
+                }
                 bool m = !z.G.Mudo;
                 foreach (var s in z.G.Vols) try { s.SetMute(m, ref Audio.Ctx); } catch { }
                 z.G.Mudo = m;
                 Invalidate();
                 break;
             case Z_USAR:
+                if (Alvo != null) { EnviarRemoto("pad", "padrao\t" + z.D.Id, true); break; }
                 if (!z.D.Padrao) { Audio.DefinirPadrao(z.D.Id); Recarregar(); }
+                break;
+            case Z_PC:
+                {
+                    var novo = z.Id == "" ? null : app.ParPorId(z.Id);
+                    if ((novo == null && Alvo == null) || (novo != null && Alvo != null && novo.Id == Alvo.Id)) break;
+                    if (remoto != null) { remoto.Fechar(); remoto = null; }
+                    Alvo = novo; estadoRemoto = null; remotoFalhou = false; pedindoEstado = false; pendentes.Clear(); enviando.Clear();
+                    abertura.Clear(); rolagem = 0;
+                    Recarregar();
+                    if (Alvo != null) PedirEstado();
+                    Montar(null); Posicionar(); Invalidate();
+                }
+                break;
+            case Z_TENTAR:
+                remotoFalhou = false; estadoRemoto = null; if (remoto != null) { remoto.Fechar(); remoto = null; }
+                PedirEstado(); Invalidate();
                 break;
             case Z_SAIDA_A:
                 MenuSaida(z);
@@ -3031,13 +3391,14 @@ class Painel : Form
         if (!d.Padrao)
         {
             var pad = new ToolStripMenuItem(d.Fluxo == 0 ? "Usar como saída padrão" : "Usar como microfone padrão");
-            pad.Click += (s, e) => { Audio.DefinirPadrao(id); Depois(); };
+            pad.Click += (s, e) => { if (Alvo != null) EnviarRemoto("pad", "padrao\t" + id, true); else { Audio.DefinirPadrao(id); Depois(); } };
             menu.Items.Add(pad);
         }
         var mu = new ToolStripMenuItem(mudo ? "Ativar som" : "Mudo");
         mu.Click += (s, e) =>
         {
-            if (d.Ep != null) try { d.Ep.SetMute(!mudo, ref Audio.Ctx); d.Mudo = !mudo; } catch { }
+            if (Alvo != null) { d.Mudo = !mudo; EnviarRemoto("md|" + id, "mudod\t" + id + "\t" + (d.Mudo ? 1 : 0), false); }
+            else if (d.Ep != null) try { d.Ep.SetMute(!mudo, ref Audio.Ctx); d.Mudo = !mudo; } catch { }
             Invalidate();
         };
         menu.Items.Add(mu);
@@ -3086,7 +3447,7 @@ class Painel : Form
         var menu = new ContextMenuStrip { ShowImageMargin = true, ShowCheckMargin = true };
         menu.Items.Add(new ToolStripLabel("Saída de " + a.Nome) { Tag = "fraco" });
         var pad = new ToolStripMenuItem("Padrão do Windows") { Checked = a.Saida == null };
-        pad.Click += (s, e) => { app.DefinirSaidaApp(a.Exe, a.Pids, null); Depois(); };
+        pad.Click += (s, e) => { SaidaApp(a, null); if (Alvo == null) Depois(); };
         menu.Items.Add(pad);
         menu.Items.Add(new ToolStripSeparator());
         int ti = Math.Max(16, E(16));
@@ -3095,7 +3456,7 @@ class Painel : Form
             string id = d.Id;
             var it = new ToolStripMenuItem(d.Nome) { Checked = a.Saida != null && Politica.Igual(a.Saida, id) };
             it.Image = Desenho.Glifo(Audio.Glifo(d), ti, cTexto, 1f);
-            it.Click += (s, e) => { app.DefinirSaidaApp(a.Exe, a.Pids, id); Depois(); };
+            it.Click += (s, e) => { SaidaApp(a, id); if (Alvo == null) Depois(); };
             menu.Items.Add(it);
         }
         menu.Items.Add(new ToolStripSeparator());
@@ -3108,6 +3469,12 @@ class Painel : Form
         Alterna.Abriu(chave, menu);
         MostrarDentro(menu, onde, z.Tipo == Z_SAIDA_A);
         Invalidate();
+    }
+
+    void SaidaApp(GrupoApp a, string id)
+    {
+        if (a.Remoto) { EnviarRemoto("sa|" + a.Exe, "saida\t" + a.Exe + "\t" + (id ?? "-"), true); return; }
+        app.DefinirSaidaApp(a.Exe, a.Pids, id);
     }
 
     void Depois(int ms)
@@ -3192,6 +3559,507 @@ class Mensageiro : NativeWindow
 }
 
 // =====================================================================
+//  Controle remoto entre PCs da mesma rede de casa
+//  - so funciona entre PCs PAREADOS (codigo de 8 caracteres, uma vez so)
+//  - cada conexao: troca de chaves ECDH P-256 nova, assinada pelas identidades
+//    (ECDSA P-256) guardadas pelo proprio Windows; dados em AES-256-CBC + HMAC-SHA256
+//  - nada trafega no dia a dia: so quando o painel mostra o outro PC
+// =====================================================================
+class ParPC
+{
+    public string Id, Nome, ChavePub, UltimoIP;
+    public bool EuControlo;   // este PC controla o outro
+    public bool MeControla;   // o outro PC pode controlar este
+}
+
+static class Rede
+{
+    public const int PortaTcp = 47321, PortaUdp = 47322;
+    public static bool SoLocal;   // testes: escuta so no proprio PC (sem abrir para a rede)
+    public const string Alfabeto = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"; // sem 0/O, 1/I/L
+
+    // ---------- identidade deste PC (chave guardada pelo Windows, nao sai do PC) ----------
+    const string NomeChave = "Sintonia-Identidade";
+    static CngKey Identidade()
+    {
+        if (CngKey.Exists(NomeChave)) return CngKey.Open(NomeChave);
+        var p = new CngKeyCreationParameters { ExportPolicy = CngExportPolicies.None, KeyUsage = CngKeyUsages.Signing };
+        return CngKey.Create(CngAlgorithm.ECDsaP256, NomeChave, p);
+    }
+    public static void ApagarIdentidade() { try { if (CngKey.Exists(NomeChave)) using (var k = CngKey.Open(NomeChave)) k.Delete(); } catch { } }
+    public static byte[] MinhaChavePublica() { using (var k = Identidade()) return k.Export(CngKeyBlobFormat.EccPublicBlob); }
+    public static byte[] Assinar(byte[] dados)
+    {
+        using (var k = Identidade()) using (var e = new ECDsaCng(k)) { e.HashAlgorithm = CngAlgorithm.Sha256; return e.SignData(dados); }
+    }
+    public static bool Verificar(byte[] pub, byte[] dados, byte[] assinatura)
+    {
+        try
+        {
+            using (var k = CngKey.Import(pub, CngKeyBlobFormat.EccPublicBlob)) using (var e = new ECDsaCng(k))
+            { e.HashAlgorithm = CngAlgorithm.Sha256; return e.VerifyData(dados, assinatura); }
+        }
+        catch { return false; }
+    }
+
+    // ---------- ajudantes ----------
+    public static byte[] Aleatorio(int n) { var b = new byte[n]; using (var r = RandomNumberGenerator.Create()) r.GetBytes(b); return b; }
+    public static byte[] B(string s) { return Encoding.UTF8.GetBytes(s ?? ""); }
+    public static string S(byte[] b) { return Encoding.UTF8.GetString(b); }
+    public static byte[] Sha(params byte[][] partes)
+    {
+        using (var h = SHA256.Create()) { var j = Juntar(partes); return h.ComputeHash(j); }
+    }
+    public static byte[] Hmac(byte[] chave, params byte[][] partes) { using (var h = new HMACSHA256(chave)) return h.ComputeHash(Juntar(partes)); }
+    public static bool Iguais(byte[] a, byte[] b)
+    {
+        if (a == null || b == null || a.Length != b.Length) return false;
+        int d = 0; for (int i = 0; i < a.Length; i++) d |= a[i] ^ b[i]; return d == 0;  // tempo constante
+    }
+    public static byte[] Juntar(params byte[][] partes)
+    {
+        using (var ms = new MemoryStream())
+        {
+            foreach (var p in partes) { var x = p ?? new byte[0]; ms.Write(BitConverter.GetBytes(x.Length), 0, 4); ms.Write(x, 0, x.Length); }
+            return ms.ToArray();
+        }
+    }
+    public static byte[][] Separar(byte[] dados)
+    {
+        var l = new List<byte[]>(); int i = 0;
+        while (i + 4 <= dados.Length)
+        {
+            int n = BitConverter.ToInt32(dados, i); i += 4;
+            if (n < 0 || i + n > dados.Length) throw new InvalidDataException();
+            var x = new byte[n]; Buffer.BlockCopy(dados, i, x, 0, n); l.Add(x); i += n;
+        }
+        return l.ToArray();
+    }
+
+    public static string NovoCodigo()
+    {
+        var b = Aleatorio(8); var sb = new StringBuilder();
+        for (int i = 0; i < 8; i++) { sb.Append(Alfabeto[b[i] % Alfabeto.Length]); if (i == 3) sb.Append('-'); }
+        return sb.ToString();
+    }
+    public static string NormalizarCodigo(string c) { return (c ?? "").ToUpperInvariant().Replace("-", "").Replace(" ", ""); }
+
+    // ---------- so rede local (privada) e na mesma sub-rede de uma placa deste PC ----------
+    public static bool EhRedeLocal(IPAddress ip)
+    {
+        if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+        if (IPAddress.IsLoopback(ip)) return true;
+        if (ip.AddressFamily != AddressFamily.InterNetwork) return ip.IsIPv6LinkLocal;
+        var b = ip.GetAddressBytes();
+        bool privado = b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168) || (b[0] == 169 && b[1] == 254);
+        if (!privado) return false;
+        foreach (var r in MinhasRedes())
+        {
+            var a = r.Key.GetAddressBytes(); var m = r.Value.GetAddressBytes(); bool igual = true;
+            for (int i = 0; i < 4; i++) if ((a[i] & m[i]) != (b[i] & m[i])) igual = false;
+            if (igual) return true;
+        }
+        return false;
+    }
+    public static List<KeyValuePair<IPAddress, IPAddress>> MinhasRedes()
+    {
+        var l = new List<KeyValuePair<IPAddress, IPAddress>>();
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                foreach (var u in ni.GetIPProperties().UnicastAddresses)
+                    if (u.Address.AddressFamily == AddressFamily.InterNetwork && u.IPv4Mask != null)
+                        l.Add(new KeyValuePair<IPAddress, IPAddress>(u.Address, u.IPv4Mask));
+            }
+        }
+        catch { }
+        return l;
+    }
+
+    // ---------- procurar PCs com "pode ser controlado" ligado (so quando voce pede) ----------
+    public class Achado { public string Id, Nome, IP; }
+    public static List<Achado> Procurar(int ms)
+    {
+        var r = new List<Achado>();
+        using (var u = new UdpClient(0))
+        {
+            u.EnableBroadcast = true;
+            var msg = B("SINTONIA?1");
+            foreach (var rede in MinhasRedes())
+            {
+                var a = rede.Key.GetAddressBytes(); var m = rede.Value.GetAddressBytes(); var bc = new byte[4];
+                for (int i = 0; i < 4; i++) bc[i] = (byte)(a[i] | ~m[i]);
+                try { u.Send(msg, msg.Length, new IPEndPoint(new IPAddress(bc), PortaUdp)); } catch { }
+            }
+            try { u.Send(msg, msg.Length, new IPEndPoint(IPAddress.Loopback, PortaUdp)); } catch { }
+            var fim = DateTime.Now.AddMilliseconds(ms);
+            while (DateTime.Now < fim)
+            {
+                u.Client.ReceiveTimeout = Math.Max(50, (int)(fim - DateTime.Now).TotalMilliseconds);
+                try
+                {
+                    var de = new IPEndPoint(IPAddress.Any, 0);
+                    var p = S(u.Receive(ref de)).Split('|');
+                    if (p.Length == 3 && p[0] == "SINTONIA!" && EhRedeLocal(de.Address) && !r.Exists(x => x.Id == p[1]))
+                        r.Add(new Achado { Id = p[1], Nome = p[2], IP = de.Address.ToString() });
+                }
+                catch { break; }
+            }
+        }
+        return r;
+    }
+}
+
+// Canal criptografado sobre TCP: [tamanho][dados]; depois do aperto de maos tudo vai cifrado
+class Canal : IDisposable
+{
+    readonly TcpClient tcp;
+    readonly NetworkStream ns;
+    byte[] cifraEnvia, macEnvia, cifraRecebe, macRecebe;
+    ulong seqEnvia, seqRecebe;
+    public readonly IPAddress Ip;
+
+    public Canal(TcpClient c)
+    {
+        tcp = c; ns = c.GetStream();
+        Ip = ((IPEndPoint)c.Client.RemoteEndPoint).Address;
+        tcp.NoDelay = true;
+        Prazo(5000);
+    }
+    public void Prazo(int ms) { tcp.ReceiveTimeout = ms; tcp.SendTimeout = ms; }
+
+    public void EnviarBruto(byte[] b)
+    {
+        var t = BitConverter.GetBytes(b.Length);
+        ns.Write(t, 0, 4); ns.Write(b, 0, b.Length); ns.Flush();
+    }
+    public byte[] ReceberBruto()
+    {
+        var t = Ler(4); int n = BitConverter.ToInt32(t, 0);
+        if (n < 0 || n > 4 * 1024 * 1024) throw new InvalidDataException();
+        return Ler(n);
+    }
+    byte[] Ler(int n)
+    {
+        var b = new byte[n]; int i = 0;
+        while (i < n) { int k = ns.Read(b, i, n - i); if (k <= 0) throw new IOException("fechado"); i += k; }
+        return b;
+    }
+
+    // chaves separadas para cada direcao, tiradas do segredo da troca ECDH + resumo da conversa
+    public void Chaves(byte[] segredo, byte[] resumo, bool souCliente)
+    {
+        var c2s = Rede.Hmac(segredo, Rede.B("cifra c->s"), resumo); var m2s = Rede.Hmac(segredo, Rede.B("mac c->s"), resumo);
+        var s2c = Rede.Hmac(segredo, Rede.B("cifra s->c"), resumo); var ms2c = Rede.Hmac(segredo, Rede.B("mac s->c"), resumo);
+        if (souCliente) { cifraEnvia = c2s; macEnvia = m2s; cifraRecebe = s2c; macRecebe = ms2c; }
+        else { cifraEnvia = s2c; macEnvia = ms2c; cifraRecebe = c2s; macRecebe = m2s; }
+    }
+
+    public void Enviar(string texto) { EnviarBruto(Selar(texto)); }
+
+    public string Receber()
+    {
+        var p = Rede.Separar(ReceberBruto());
+        if (p.Length != 4 || p[0].Length != 8 || p[1].Length != 16) throw new InvalidDataException();
+        if (!Rede.Iguais(Rede.Hmac(macRecebe, p[0], p[1], p[2]), p[3])) throw new InvalidDataException("mensagem alterada");
+        if (BitConverter.ToUInt64(p[0], 0) != seqRecebe++) throw new InvalidDataException("mensagem repetida/fora de ordem");
+        using (var aes = Aes.Create())
+        {
+            aes.Key = cifraRecebe; aes.IV = p[1]; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
+            using (var d = aes.CreateDecryptor()) return Rede.S(d.TransformFinalBlock(p[2], 0, p[2].Length));
+        }
+    }
+
+    public void Dispose() { try { ns.Close(); } catch { } try { tcp.Close(); } catch { } }
+
+    public string Enviar2(string t) { Enviar(t); return Receber(); }
+    // pacote cifrado que vai pela rede: [seq][iv][dados cifrados][HMAC de tudo]
+    public byte[] Selar(string texto)
+    {
+        var iv = Rede.Aleatorio(16); byte[] cifrado;
+        using (var aes = Aes.Create())
+        {
+            aes.Key = cifraEnvia; aes.IV = iv; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
+            using (var e = aes.CreateEncryptor()) { var p = Rede.B(texto); cifrado = e.TransformFinalBlock(p, 0, p.Length); }
+        }
+        var seq = BitConverter.GetBytes(seqEnvia++);
+        return Rede.Juntar(seq, iv, cifrado, Rede.Hmac(macEnvia, seq, iv, cifrado));
+    }
+
+    static ECDiffieHellmanCng NovaTroca()
+    {
+        var dh = new ECDiffieHellmanCng(256);
+        dh.KeyDerivationFunction = ECDiffieHellmanKeyDerivationFunction.Hash;
+        dh.HashAlgorithm = CngAlgorithm.Sha256;
+        return dh;
+    }
+    static byte[] Segredo(ECDiffieHellmanCng dh, byte[] pubOutro)
+    {
+        using (var k = ECDiffieHellmanCngPublicKey.FromByteArray(pubOutro, CngKeyBlobFormat.EccPublicBlob)) return dh.DeriveKeyMaterial(k);
+    }
+
+    // ---------- lado de quem CONTROLA ----------
+    public static Canal Conectar(string ip, int msPrazo) { return Conectar(ip, msPrazo, Rede.PortaTcp); }
+    public static Canal Conectar(string ip, int msPrazo, int porta)
+    {
+        var c = new TcpClient();
+        var r = c.BeginConnect(IPAddress.Parse(ip), porta, null, null);
+        if (!r.AsyncWaitHandle.WaitOne(msPrazo) || !c.Connected) { c.Close(); throw new IOException("sem resposta"); }
+        c.EndConnect(r);
+        return new Canal(c);
+    }
+
+    // abre uma sessao com um PC ja pareado (os dois provam quem sao com as identidades guardadas)
+    public void SessaoCliente(string meuId, ParPC par)
+    {
+        using (var dh = NovaTroca())
+        {
+            var eph = dh.PublicKey.ToByteArray(); var nonce = Rede.Aleatorio(32);
+            EnviarBruto(Rede.Juntar(Rede.B("SESSAO"), Rede.B(meuId), eph, nonce));
+            var r = Rede.Separar(ReceberBruto());
+            if (Rede.S(r[0]) != "OK") throw new IOException(r.Length > 1 ? Rede.S(r[1]) : "recusado");
+            if (Rede.S(r[1]) != par.Id) throw new IOException("outro PC respondeu");
+            var resumo = Rede.Sha(Rede.B("SESSAO"), Rede.B(meuId), eph, nonce, r[1], r[2], r[3]);
+            if (!Rede.Verificar(Convert.FromBase64String(par.ChavePub), Rede.Juntar(Rede.B("S"), resumo), r[4])) throw new IOException("identidade nao confere");
+            EnviarBruto(Rede.Juntar(Rede.B("PROVA"), Rede.Assinar(Rede.Juntar(Rede.B("C"), resumo))));
+            Chaves(Segredo(dh, r[2]), resumo, true);
+            if (Receber() != "PRONTO") throw new IOException("sessao recusada");
+        }
+    }
+
+    // pareamento: troca as identidades, conferidas pelo codigo mostrado no outro PC
+    public ParPC ParearCliente(string meuId, string meuNome, string codigo)
+    {
+        using (var dh = NovaTroca())
+        {
+            var eph = dh.PublicKey.ToByteArray(); var minhaPub = Rede.MinhaChavePublica();
+            EnviarBruto(Rede.Juntar(Rede.B("PAREAR"), Rede.B(meuId), Rede.B(meuNome), minhaPub, eph));
+            var r = Rede.Separar(ReceberBruto());
+            if (Rede.S(r[0]) != "PAR") throw new IOException(r.Length > 1 ? Rede.S(r[1]) : "recusado");
+            var resumo = Rede.Sha(Rede.B("PAREAR"), Rede.B(meuId), Rede.B(meuNome), minhaPub, eph, r[1], r[2], r[3], r[4]);
+            var chave = Rede.Sha(Rede.B(Rede.NormalizarCodigo(codigo)), Segredo(dh, r[4]));
+            EnviarBruto(Rede.Juntar(Rede.B("CONF"), Rede.Hmac(chave, Rede.B("C"), resumo)));
+            var f = Rede.Separar(ReceberBruto());
+            if (Rede.S(f[0]) != "CONF") throw new IOException(f.Length > 1 ? Rede.S(f[1]) : "codigo errado");
+            if (!Rede.Iguais(f[1], Rede.Hmac(chave, Rede.B("S"), resumo))) throw new IOException("o outro PC nao confirmou o codigo");
+            return new ParPC { Id = Rede.S(r[1]), Nome = Rede.S(r[2]), ChavePub = Convert.ToBase64String(r[3]), UltimoIP = Ip.ToString() };
+        }
+    }
+
+    // ---------- lado de quem E CONTROLADO ----------
+    // retorna: o par autenticado (sessao aberta) ou null (pareamento feito/recusado; conexao encerra)
+    public ParPC AtenderServidor(string meuId, string meuNome, Func<string, ParPC> parPorId, Func<bool> permitido,
+                                 Func<string> codigoAtivo, Action codigoErrado, Action<ParPC> pareado)
+    {
+        var r = Rede.Separar(ReceberBruto());
+        string tipo = Rede.S(r[0]);
+        using (var dh = NovaTroca())
+        {
+            var eph = dh.PublicKey.ToByteArray();
+            if (tipo == "SESSAO")
+            {
+                var par = parPorId(Rede.S(r[1]));
+                if (!permitido()) { EnviarBruto(Rede.Juntar(Rede.B("NAO"), Rede.B("este PC nao esta aceitando controle"))); return null; }
+                if (par == null) { EnviarBruto(Rede.Juntar(Rede.B("NAO"), Rede.B("PC nao pareado"))); return null; }
+                var nonce = Rede.Aleatorio(32);
+                var resumo = Rede.Sha(r[0], r[1], r[2], r[3], Rede.B(meuId), eph, nonce);
+                EnviarBruto(Rede.Juntar(Rede.B("OK"), Rede.B(meuId), eph, nonce, Rede.Assinar(Rede.Juntar(Rede.B("S"), resumo))));
+                var p = Rede.Separar(ReceberBruto());
+                if (Rede.S(p[0]) != "PROVA" || !Rede.Verificar(Convert.FromBase64String(par.ChavePub), Rede.Juntar(Rede.B("C"), resumo), p[1]))
+                    return null;
+                Chaves(Segredo(dh, r[2]), resumo, false);
+                Enviar("PRONTO");
+                return par;
+            }
+            if (tipo == "PAREAR")
+            {
+                string codigo = codigoAtivo();
+                if (codigo == null || !permitido()) { EnviarBruto(Rede.Juntar(Rede.B("NAO"), Rede.B("gere um codigo no outro PC primeiro"))); return null; }
+                var minhaPub = Rede.MinhaChavePublica();
+                EnviarBruto(Rede.Juntar(Rede.B("PAR"), Rede.B(meuId), Rede.B(meuNome), minhaPub, eph));
+                var resumo = Rede.Sha(r[0], r[1], r[2], r[3], r[4], Rede.B(meuId), Rede.B(meuNome), minhaPub, eph);
+                var chave = Rede.Sha(Rede.B(Rede.NormalizarCodigo(codigo)), Segredo(dh, r[4]));
+                var f = Rede.Separar(ReceberBruto());
+                if (Rede.S(f[0]) != "CONF" || !Rede.Iguais(f[1], Rede.Hmac(chave, Rede.B("C"), resumo)))
+                {
+                    codigoErrado();
+                    EnviarBruto(Rede.Juntar(Rede.B("NAO"), Rede.B("codigo errado")));
+                    return null;
+                }
+                EnviarBruto(Rede.Juntar(Rede.B("CONF"), Rede.Hmac(chave, Rede.B("S"), resumo)));
+                pareado(new ParPC { Id = Rede.S(r[1]), Nome = Rede.S(r[2]), ChavePub = Convert.ToBase64String(r[3]), UltimoIP = Ip.ToString() });
+                return null;
+            }
+        }
+        return null;
+    }
+}
+
+// Quem E CONTROLADO: espera conexoes (parado, sem gastar CPU) so enquanto a opcao estiver ligada
+class Receptor
+{
+    readonly App app;
+    TcpListener tl;
+    UdpClient udp;
+    volatile bool ligado;
+    int conexoes;
+
+    public Receptor(App a) { app = a; }
+    public bool Ligado { get { return ligado; } }
+
+    public void Ligar()
+    {
+        if (ligado) return;
+        try
+        {
+            var end = Rede.SoLocal ? IPAddress.Loopback : IPAddress.Any;
+            tl = new TcpListener(end, Rede.PortaTcp); tl.Start();
+            udp = new UdpClient(new IPEndPoint(end, Rede.PortaUdp));
+        }
+        catch (Exception ex) { Program.Log(ex); Desligar(); return; }
+        ligado = true;
+        new Thread(LoopTcp) { IsBackground = true, Name = "Sintonia.RedeTcp", Priority = ThreadPriority.BelowNormal }.Start();
+        new Thread(LoopUdp) { IsBackground = true, Name = "Sintonia.RedeUdp", Priority = ThreadPriority.BelowNormal }.Start();
+    }
+
+    public void Desligar()
+    {
+        ligado = false;
+        try { if (tl != null) tl.Stop(); } catch { }
+        try { if (udp != null) udp.Close(); } catch { }
+        tl = null; udp = null;
+    }
+
+    void LoopTcp()
+    {
+        var l = tl;
+        while (ligado && l != null)
+        {
+            TcpClient c;
+            try { c = l.AcceptTcpClient(); } catch { break; }   // espera parado: zero CPU
+            var ip = ((IPEndPoint)c.Client.RemoteEndPoint).Address;
+            if (!Rede.EhRedeLocal(ip) || Interlocked.Increment(ref conexoes) > 4)
+            {
+                if (Rede.EhRedeLocal(ip)) Interlocked.Decrement(ref conexoes);
+                c.Close(); continue;
+            }
+            var t = new Thread(() => Atender(c)) { IsBackground = true, Priority = ThreadPriority.BelowNormal };
+            t.Start();
+        }
+    }
+
+    void LoopUdp()
+    {
+        var u = udp;
+        while (ligado && u != null)
+        {
+            try
+            {
+                var de = new IPEndPoint(IPAddress.Any, 0);
+                var msg = Rede.S(u.Receive(ref de));                // espera parado: zero CPU
+                if (msg == "SINTONIA?1" && Rede.EhRedeLocal(de.Address))
+                {
+                    var r = Rede.B("SINTONIA!|" + app.MeuId + "|" + Environment.MachineName.Replace("|", ""));
+                    u.Send(r, r.Length, de);
+                }
+            }
+            catch { if (!ligado) break; }
+        }
+    }
+
+    void Atender(TcpClient c)
+    {
+        try
+        {
+            using (var canal = new Canal(c))
+            {
+                var par = canal.AtenderServidor(app.MeuId, Environment.MachineName,
+                    id => app.ParQueMeControla(id), () => app.Receptor,
+                    () => app.CodigoValido(), () => app.CodigoErrado(),
+                    p => app.Invocar(() => { app.ParearCom(p, false); return ""; }));
+                if (par == null) return;
+                app.Invocar(() => { app.AtualizarIpPar(par.Id, canal.Ip.ToString()); return ""; });
+                canal.Prazo(60000);                                   // sem pedidos por 1 minuto: encerra
+                while (ligado && app.Receptor)
+                {
+                    string pedido = canal.Receber();
+                    string resposta = app.Invocar(() => app.ExecutarRemoto(pedido));
+                    canal.Enviar(resposta ?? "");
+                }
+            }
+        }
+        catch { }
+        finally { Interlocked.Decrement(ref conexoes); }
+    }
+}
+
+// Quem CONTROLA: uma conexao com o outro PC so enquanto o painel mostra esse PC
+class Remoto
+{
+    readonly App app;
+    public readonly ParPC Par;
+    readonly Control ui;
+    readonly System.Collections.Concurrent.BlockingCollection<KeyValuePair<string, Action<string>>> fila =
+        new System.Collections.Concurrent.BlockingCollection<KeyValuePair<string, Action<string>>>();
+    volatile bool fim;
+    Canal canal;
+
+    public Remoto(App a, ParPC p, Control u)
+    {
+        app = a; Par = p; ui = u;
+        new Thread(Rodar) { IsBackground = true, Name = "Sintonia.Remoto", Priority = ThreadPriority.BelowNormal }.Start();
+    }
+
+    // pede algo ao outro PC; a resposta chega na tela (null = falhou)
+    public void Pedir(string comando, Action<string> resposta) { if (!fim) fila.Add(new KeyValuePair<string, Action<string>>(comando, resposta)); }
+
+    public void Fechar() { fim = true; fila.Add(new KeyValuePair<string, Action<string>>(null, null)); }
+
+    void Rodar()
+    {
+        while (!fim)
+        {
+            KeyValuePair<string, Action<string>> it;
+            try { it = fila.Take(); } catch { break; }
+            if (it.Key == null) break;
+            string r = null;
+            for (int tent = 0; tent < 2 && r == null && !fim; tent++)
+            {
+                try
+                {
+                    if (canal == null) canal = Abrir();
+                    canal.Enviar(it.Key);
+                    r = canal.Receber();
+                }
+                catch { if (canal != null) canal.Dispose(); canal = null; }
+            }
+            var resp = it.Value; var res = r;
+            if (resp != null && !fim) try { ui.BeginInvoke(new Action(() => resp(res))); } catch { }
+        }
+        if (canal != null) canal.Dispose();
+    }
+
+    Canal Abrir()
+    {
+        Canal c = null;
+        if (!string.IsNullOrEmpty(Par.UltimoIP)) try { c = Canal.Conectar(Par.UltimoIP, 1500); } catch { c = null; }
+        if (c == null)
+        {
+            // o endereco mudou: procura o PC pela rede (so agora, so por um instante)
+            var achado = Rede.Procurar(1200).Find(x => x.Id == Par.Id);
+            if (achado == null) throw new IOException("nao encontrado");
+            c = Canal.Conectar(achado.IP, 1500);
+            var ip = achado.IP;
+            try { ui.BeginInvoke(new Action(() => app.AtualizarIpPar(Par.Id, ip))); } catch { }
+        }
+        try { c.SessaoCliente(app.MeuId, Par); c.Prazo(8000); return c; }
+        catch { c.Dispose(); throw; }
+    }
+}
+
+// =====================================================================
 //  App
 // =====================================================================
 class App : ApplicationContext
@@ -3218,6 +4086,17 @@ class App : ApplicationContext
                 Animacoes = true, FixarBandeja = true, MenuLateralAberto = true,
                 MostrarAdaptador = false, MostrarLogo = true, MostrarSom = false;
     public readonly List<string> Ordem = new List<string>();
+
+    // ---- outros PCs (controle pela rede) ----
+    public bool Controlador;                 // este PC controla outros (padrao: desligado)
+    bool receptorLigado;                     // outros PCs podem controlar este (padrao: desligado)
+    public string MeuId;
+    readonly List<ParPC> pares = new List<ParPC>();
+    Receptor servidor;
+    readonly object travaCodigo = new object();
+    string codigo; DateTime codigoAte; int codigoErros;
+    List<Disp> remCache; DateTime remCacheT;
+    readonly Timer tRemCache = new Timer { Interval = 15000 };
     public readonly Dictionary<string, bool> Abertos = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
     public int Passo = 2;
     public int AlturaMax = 90;   // % da altura livre da tela; passando disso o painel rola
@@ -3260,6 +4139,7 @@ class App : ApplicationContext
         if (!File.Exists(arqConfig) && File.Exists(antigo)) try { File.Move(antigo, arqConfig); } catch { }
         bool primeiraVez = !File.Exists(arqConfig);
         LerConfig();
+        if (string.IsNullOrEmpty(MeuId)) { MeuId = Guid.NewGuid().ToString("N"); if (!primeiraVez) SalvarConfig(); }
         Audio.ComMedidor = MostrarSom;
         invocador.CreateControl();
         var h = invocador.Handle;
@@ -3310,6 +4190,10 @@ class App : ApplicationContext
 
         AtualizarIcone();
         RegistrarAtalhos();
+
+        servidor = new Receptor(this);
+        if (receptorLigado) servidor.Ligar();
+        tRemCache.Tick += (s, e) => { tRemCache.Stop(); Audio.Liberar(remCache); remCache = null; Aparar(); };
 
         vigia = new Vigia(
             tipo => Postar(() =>
@@ -3911,6 +4795,200 @@ class App : ApplicationContext
 
     public void PainelMudou() { if (painel.Visible) painel.Recarregar(); }
 
+    // =================== outros PCs ===================
+    public bool Receptor
+    {
+        get { return receptorLigado; }
+        set
+        {
+            receptorLigado = value;
+            if (value) servidor.Ligar(); else { servidor.Desligar(); lock (travaCodigo) codigo = null; }
+            SalvarConfig();
+        }
+    }
+    public bool ReceptorAtivo { get { return servidor != null && servidor.Ligado; } }
+
+    public void DefinirControlador(bool v) { Controlador = v; SalvarConfig(); PainelMudou(); }
+
+    public List<ParPC> Pares() { lock (pares) return new List<ParPC>(pares); }
+    public List<ParPC> Controlados() { lock (pares) return pares.FindAll(x => x.EuControlo); }
+    public ParPC ParPorId(string id) { lock (pares) return pares.Find(x => x.Id == id && x.EuControlo); }
+    public ParPC ParQueMeControla(string id) { lock (pares) return pares.Find(x => x.Id == id && x.MeControla); }
+
+    public string Invocar(Func<string> f)
+    {
+        try { return invocador.IsHandleCreated ? (string)invocador.Invoke(f) : null; } catch { return null; }
+    }
+
+    // codigo de pareamento: 8 caracteres, vale 2 minutos e 3 tentativas
+    public string GerarCodigo()
+    {
+        lock (travaCodigo) { codigo = Rede.NovoCodigo(); codigoAte = DateTime.Now.AddMinutes(2); codigoErros = 0; return codigo; }
+    }
+    public string CodigoValido()
+    {
+        lock (travaCodigo) return codigo != null && DateTime.Now < codigoAte && codigoErros < 3 ? codigo : null;
+    }
+    public int CodigoSegundos() { lock (travaCodigo) return codigo == null ? 0 : Math.Max(0, (int)(codigoAte - DateTime.Now).TotalSeconds); }
+    public void CancelarCodigo() { lock (travaCodigo) codigo = null; }
+    public void CodigoErrado()
+    {
+        lock (travaCodigo) { codigoErros++; if (codigoErros >= 3) codigo = null; }
+        Postar(AtualizarConfig);
+    }
+
+    static string NomeLimpo(string n)
+    {
+        n = (n ?? "").Replace("|", "").Replace("\t", " ").Replace("\r", "").Replace("\n", "").Replace("=", "").Trim();
+        if (n.Length > 40) n = n.Substring(0, 40);
+        return n.Length == 0 ? "Outro PC" : n;
+    }
+
+    // pareou: guarda a identidade do outro PC (euControlo: fui eu que digitei o codigo)
+    public void ParearCom(ParPC p, bool euControlo)
+    {
+        if (!euControlo) lock (travaCodigo) codigo = null;     // o codigo so vale uma vez
+        lock (pares)
+        {
+            var x = pares.Find(q => q.Id == p.Id);
+            if (x == null) { x = new ParPC { Id = p.Id }; pares.Add(x); }
+            x.Nome = NomeLimpo(p.Nome); x.ChavePub = p.ChavePub; x.UltimoIP = p.UltimoIP;
+            if (euControlo) x.EuControlo = true; else x.MeControla = true;
+        }
+        SalvarConfig();
+        AtualizarConfig();
+        PainelMudou();
+        if (!euControlo) Avisar('\uE7F8', "Pareado com " + NomeLimpo(p.Nome));
+    }
+
+    public void RemoverPar(string id)
+    {
+        lock (pares) pares.RemoveAll(x => x.Id == id);
+        SalvarConfig();
+        AtualizarConfig();
+        PainelMudou();
+    }
+
+    public void AtualizarIpPar(string id, string ip)
+    {
+        bool mudou = false;
+        lock (pares) { var x = pares.Find(q => q.Id == id); if (x != null && x.UltimoIP != ip) { x.UltimoIP = ip; mudou = true; } }
+        if (mudou) SalvarConfig();
+    }
+
+    void AtualizarConfig() { if (config != null && !config.IsDisposed) config.Atualizar(); }
+
+    // ---- pedidos que chegam do PC que controla este (sempre na thread da tela) ----
+    static string T(string x) { return (x ?? "").Replace("\t", " ").Replace("\n", " ").Replace("\r", " "); }
+    static string N(float v) { return v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture); }
+
+    List<Disp> ListaRemota(bool nova)
+    {
+        if (nova || remCache == null || (DateTime.Now - remCacheT).TotalSeconds > 3)
+        {
+            Audio.Liberar(remCache);
+            remCache = Audio.Listar(0, true, Inativos, Nomes);
+            remCache.AddRange(Audio.Listar(1, false, false, Nomes));
+            remCacheT = DateTime.Now;
+        }
+        tRemCache.Stop(); tRemCache.Start();     // sem pedidos por 15 s: solta tudo
+        return remCache;
+    }
+
+    public string ExecutarRemoto(string pedido)
+    {
+        try
+        {
+            if (!receptorLigado || pedido == null) return "nao";
+            var c = pedido.Split('\t');
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            switch (c[0])
+            {
+                case "estado":
+                    {
+                        var sb = new StringBuilder();
+                        foreach (var d in ListaRemota(true))
+                        {
+                            sb.Append("D\t").Append(d.Fluxo).Append('\t').Append(T(d.Id)).Append('\t').Append(T(d.Nome)).Append('\t').Append(d.Forma)
+                              .Append('\t').Append(d.Padrao ? 1 : 0).Append('\t').Append(N(d.Vol)).Append('\t').Append(d.Mudo ? 1 : 0)
+                              .Append('\t').Append(T(d.Adaptador)).Append('\n');
+                            foreach (var a in d.Apps)
+                                sb.Append("A\t").Append(T(d.Id)).Append('\t').Append(T(a.Exe)).Append('\t').Append(T(a.Nome)).Append('\t').Append(N(a.Vol))
+                                  .Append('\t').Append(a.Mudo ? 1 : 0).Append('\t').Append(a.Ativo ? 1 : 0).Append('\t').Append(T(a.Saida))
+                                  .Append('\t').Append(a.Sistema ? 1 : 0).Append('\n');
+                        }
+                        return sb.ToString();
+                    }
+                case "icone":
+                    {
+                        foreach (var d in ListaRemota(false))
+                            foreach (var a in d.Apps)
+                                if (T(a.Exe) == c[1] && a.Caminho != null)
+                                {
+                                    var b = Processos.Icone(a.Caminho, 32);   // so de apps tocando agora: nao le outros arquivos
+                                    if (b == null) return "";
+                                    using (var ms = new MemoryStream()) { b.Save(ms, System.Drawing.Imaging.ImageFormat.Png); return Convert.ToBase64String(ms.ToArray()); }
+                                }
+                        return "";
+                    }
+                case "vold":
+                case "mudod":
+                    {
+                        var d = ListaRemota(false).Find(x => x.Id == c[1]);
+                        if (d == null || d.Ep == null) return "nao";
+                        if (c[0] == "vold")
+                        {
+                            float v = Math.Max(0f, Math.Min(1f, float.Parse(c[2], inv)));
+                            d.Ep.SetMasterVolumeLevelScalar(v, ref Audio.Ctx); d.Vol = v;
+                            if (d.Mudo && v > 0) { d.Ep.SetMute(false, ref Audio.Ctx); d.Mudo = false; }
+                        }
+                        else { d.Mudo = c[2] == "1"; d.Ep.SetMute(d.Mudo, ref Audio.Ctx); }
+                        return "ok";
+                    }
+                case "vola":
+                case "mudoa":
+                    {
+                        var d = ListaRemota(false).Find(x => x.Id == c[1]);
+                        var a = d == null ? null : d.Apps.Find(x => T(x.Exe) == c[2]);
+                        if (a == null) return "nao";
+                        if (c[0] == "vola")
+                        {
+                            float v = Math.Max(0f, Math.Min(1f, float.Parse(c[3], inv)));
+                            foreach (var sv in a.Vols) try { sv.SetMasterVolume(v, ref Audio.Ctx); if (a.Mudo && v > 0) sv.SetMute(false, ref Audio.Ctx); } catch { }
+                            a.Vol = v; if (v > 0) a.Mudo = false;
+                        }
+                        else { a.Mudo = c[3] == "1"; foreach (var sv in a.Vols) try { sv.SetMute(a.Mudo, ref Audio.Ctx); } catch { } }
+                        return "ok";
+                    }
+                case "padrao":
+                    {
+                        if (ListaRemota(false).Find(x => x.Id == c[1]) == null) return "nao";
+                        Audio.DefinirPadrao(c[1]);
+                        remCache = null;
+                        PainelMudou();
+                        return "ok";
+                    }
+                case "saida":
+                    {
+                        string id = c[2] == "-" ? null : c[2];
+                        var lista = ListaRemota(false);
+                        if (id != null && lista.Find(x => x.Id == id && x.Fluxo == 0) == null) return "nao";
+                        var pids = new List<uint>(); string exe = null;
+                        foreach (var d in lista) foreach (var a in d.Apps) if (!a.Sistema && T(a.Exe) == c[1]) { exe = a.Exe; pids.AddRange(a.Pids); }
+                        if (exe == null) return "nao";
+                        DefinirSaidaApp(exe, pids, id);
+                        string alvo = id;
+                        GarantirSaidas(x => alvo, exe);
+                        GarantirDepois(x => alvo, exe);
+                        remCache = null;
+                        return "ok";
+                    }
+            }
+            return "nao";
+        }
+        catch (Exception ex) { Program.Log(ex); return "nao"; }
+    }
+
     public void DefinirSom(bool v) { MostrarSom = v; SalvarConfig(); painel.SomMudou(); }
 
     // Coloca a janela de Configuracoes ao lado do painel (sem ficar por baixo dele)
@@ -4103,6 +5181,7 @@ class App : ApplicationContext
     void Sair()
     {
         SalvarConfig();
+        if (servidor != null) servidor.Desligar();
         vigia.Parar();
         icone.Visible = false;
         Application.Exit();
@@ -4290,6 +5369,16 @@ class App : ApplicationContext
                     case "logo": MostrarLogo = v == "1"; break;
                     case "som": MostrarSom = v == "1"; break;
                     case "fixar": FixarBandeja = v == "1"; break;
+                    case "controlador": Controlador = v == "1"; break;
+                    case "receptor": receptorLigado = v == "1"; break;
+                    case "id_pc": if (v.Length >= 16) MeuId = v; break;
+                    case "par":
+                        {
+                            var a = v.Split('|');
+                            if (a.Length >= 5 && a[0].Length > 0 && a[2].Length > 0)
+                                pares.Add(new ParPC { Id = a[0], Nome = a[1], ChavePub = a[2], UltimoIP = a[3], EuControlo = a[4].Contains("C"), MeControla = a[4].Contains("R") });
+                        }
+                        break;
                     case "ordem": Ordem.Clear(); foreach (var o in v.Split(';')) if (o.Length > 0) Ordem.Add(o); break;
                     case "aberto": { var a = v.Split('>'); if (a.Length == 2) Abertos[a[0]] = a[1] == "1"; } break;
                     case "passo": int.TryParse(v, out Passo); if (Passo < 1 || Passo > 25) Passo = 2; break;
@@ -4387,6 +5476,11 @@ class App : ApplicationContext
                 "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
+            l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0));
+            if (MeuId != null) l.Add("id_pc=" + MeuId);
+            lock (pares)
+                foreach (var pc in pares)
+                    l.Add("par=" + pc.Id + "|" + pc.Nome + "|" + pc.ChavePub + "|" + (pc.UltimoIP ?? "") + "|" + (pc.EuControlo ? "C" : "") + (pc.MeControla ? "R" : ""));
             foreach (var kv in Regras) l.Add("regra=" + kv.Key + ">" + kv.Value);
             foreach (var kv in Nomes) l.Add("nome=" + kv.Key + ">" + kv.Value);
             foreach (var o in Ocultos) l.Add("oculto=" + o);
@@ -4596,8 +5690,8 @@ class Configuracoes : Form
     int pagina, rolagem, alturaConteudo;
     float navAtual = -1f;                       // 0 = barra lateral fechada (so icones), 1 = aberta
     readonly Timer tNav = new Timer { Interval = 15 };
-    static readonly string[] Paginas = { "Geral", "Perfis", "Atalhos", "Dispositivos" };
-    static readonly char[] GlifosPag = { '', '', '', '' };
+    static readonly string[] Paginas = { "Geral", "Perfis", "Atalhos", "Dispositivos", "Outros PCs" };
+    static readonly char[] GlifosPag = { '', '', '', '' , '' };
     readonly List<Linha> linhas = new List<Linha>();
     readonly List<Zona> zonas = new List<Zona>();
     Zona sobre;
@@ -4619,6 +5713,10 @@ class Configuracoes : Form
     bool perfisIniciados;
 
     int E(float v) { return (int)Math.Round(v * esc); }
+
+    public void Atualizar() { Montar(); Invalidate(); }
+    readonly Timer tCodigo = new Timer { Interval = 1000 };
+    bool procurando;
 
     public void IrPara(int p)
     {
@@ -4645,6 +5743,8 @@ class Configuracoes : Form
         int w = Math.Min(area.Width - E(40), E(880)), h = Math.Min(area.Height - E(40), E(660));
         Bounds = new Rectangle(area.X + (area.Width - w) / 2, area.Y + (area.Height - h) / 2, w, h);
         MinimumSize = new Size(E(640), E(420));
+        tCodigo.Tick += (s, e) => { if (app.CodigoValido() == null) tCodigo.Stop(); Montar(); Invalidate(); };
+        FormClosed += (s, e) => { tCodigo.Stop(); tCodigo.Dispose(); };
         Montar();
     }
 
@@ -4865,6 +5965,63 @@ class Configuracoes : Form
                 }
             }
         }
+        else if (pagina == 4)
+        {
+            Nota("Controle o som de outro PC da sua casa (ex.: o notebook) pelo painel deste, e vice-versa. Os PCs se conectam só pela rede de casa, " +
+                 "com tudo criptografado, e só depois de parear com um código. Nada é enviado no dia a dia: só quando o painel mostra o outro PC.");
+            Cab("Este PC");
+            Chave("Controlar outros PCs", "Mostra no painel um botão para cada PC pareado, para mudar o som dele daqui", () => app.Controlador, v => app.DefinirControlador(v));
+            Chave("Pode ser controlado por outros PCs", "Fica esperando, parado, um PC pareado pedir algo. Na primeira vez o Windows pergunta se libera o Sintonia: marque só \"Redes privadas\"",
+                () => app.Receptor, v => app.Receptor = v);
+            if (app.Receptor && !app.ReceptorAtivo)
+                Nota("Não foi possível esperar conexões (a porta " + Rede.PortaTcp + " pode estar em uso por outro programa).");
+
+            Cab("Parear um PC");
+            if (!app.Controlador && !app.Receptor)
+                Nota("Ligue uma das opções acima. No PC que vai ser controlado, ligue \"Pode ser controlado\" e gere o código. No PC que vai controlar, ligue \"Controlar outros PCs\" e adicione o PC com esse código.");
+            if (app.Receptor)
+            {
+                string cod = app.CodigoValido();
+                if (cod != null)
+                {
+                    int sg = app.CodigoSegundos();
+                    Botao("Código: " + cod, "Digite este código no outro PC, em \"Adicionar um PC\". Vale por " + (sg / 60) + ":" + (sg % 60).ToString("00") + " e só uma vez",
+                        () => "Cancelar", r => { app.CancelarCodigo(); Montar(); Invalidate(); });
+                }
+                else
+                    Botao("Gerar código de pareamento", "Para o outro PC poder controlar este. O código vale 2 minutos", () => "", r =>
+                    {
+                        app.GerarCodigo(); tCodigo.Start(); Montar(); Invalidate();
+                    }, '\uE8D7');
+            }
+            if (app.Controlador)
+                Botao(procurando ? "Procurando PCs na rede…" : "Adicionar um PC", "Procura na rede os PCs com \"Pode ser controlado\" ligado e pede o código mostrado neles",
+                    () => "", r => AdicionarPC(r), '\uE710');
+
+            var lista = app.Pares();
+            if (lista.Count > 0)
+            {
+                Cab("PCs pareados");
+                foreach (var pc in lista)
+                {
+                    var par = pc;
+                    string desc = par.EuControlo && par.MeControla ? "Um controla o outro" : par.EuControlo ? "Este PC controla ele" : "Ele controla este PC";
+                    if (!string.IsNullOrEmpty(par.UltimoIP)) desc += " · último endereço " + par.UltimoIP;
+                    Botao(par.Nome, desc, () => "", r =>
+                    {
+                        var m = NovoMenu();
+                        var rem = new ToolStripMenuItem("Esquecer este PC");
+                        rem.Click += (s, e) => BeginInvoke(new Action(() =>
+                        {
+                            if (MessageBox.Show(this, "Esquecer " + par.Nome + "?\n\nOs dois PCs deixam de se conectar até parear de novo. Faça o mesmo no outro PC para ele também esquecer este.",
+                                "Sintonia", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes) app.RemoverPar(par.Id);
+                        }));
+                        m.Items.Add(rem);
+                        MostrarMenu(m, r);
+                    }, '\uE7F8');
+                }
+            }
+        }
         else
         {
             Cab("Saída de cada app");
@@ -4909,6 +6066,86 @@ class Configuracoes : Form
     }
 
     static void Abrir(string cmd) { try { Process.Start(cmd); } catch { } }
+
+    // procura os PCs (por um instante) e pareia com o codigo mostrado no escolhido
+    void AdicionarPC(Rectangle r)
+    {
+        if (procurando) return;
+        procurando = true; Montar(); Invalidate();
+        new Thread(() =>
+        {
+            List<Rede.Achado> achados;
+            try { achados = Rede.Procurar(1500); } catch { achados = new List<Rede.Achado>(); }
+            achados.RemoveAll(x => x.Id == app.MeuId);
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    procurando = false; Montar(); Invalidate();
+                    var m = NovoMenu();
+                    foreach (var a in achados)
+                    {
+                        var ac = a;
+                        var it = new ToolStripMenuItem(ac.Nome + "  (" + ac.IP + ")");
+                        it.Click += (s, e) => BeginInvoke(new Action(() => PedirCodigo(ac.IP, ac.Nome)));
+                        m.Items.Add(it);
+                    }
+                    if (achados.Count == 0) m.Items.Add(new ToolStripMenuItem("Nenhum PC encontrado") { Enabled = false });
+                    m.Items.Add(new ToolStripSeparator());
+                    var ip = new ToolStripMenuItem("Digitar o endereço do PC…");
+                    ip.Click += (s, e) => BeginInvoke(new Action(() =>
+                    {
+                        using (var f = new JanelaTexto("Endereço do outro PC", "Ex.: 192.168.0.15 (no outro PC: Configurações > Rede > Propriedades)", "", app.TemaEscuro(), "Continuar", 15))
+                        {
+                            IPAddress end;
+                            if (f.ShowDialog(this) == DialogResult.OK && IPAddress.TryParse(f.Valor, out end) && end.AddressFamily == AddressFamily.InterNetwork)
+                            {
+                                if (!Rede.EhRedeLocal(end)) { MessageBox.Show(this, "Esse endereço não é da sua rede de casa.", "Sintonia"); return; }
+                                PedirCodigo(end.ToString(), end.ToString());
+                            }
+                        }
+                    }));
+                    m.Items.Add(ip);
+                    MostrarMenu(m, r);
+                }));
+            }
+            catch { }
+        }) { IsBackground = true, Priority = ThreadPriority.BelowNormal }.Start();
+    }
+
+    void PedirCodigo(string ip, string nome)
+    {
+        string cod;
+        using (var f = new JanelaTexto("Parear com " + nome, "Digite o código que aparece no outro PC (Outros PCs > Gerar código)", "", app.TemaEscuro(), "Parear", 9))
+        {
+            if (f.ShowDialog(this) != DialogResult.OK) return;
+            cod = f.Valor;
+        }
+        if (Rede.NormalizarCodigo(cod).Length != 8) { MessageBox.Show(this, "O código tem 8 letras e números (ex.: K7QM-4XPA).", "Sintonia"); return; }
+        Cursor = Cursors.WaitCursor;
+        string meuId = app.MeuId;
+        new Thread(() =>
+        {
+            ParPC par = null; string erro = null;
+            try { using (var c = Canal.Conectar(ip, 2000)) par = c.ParearCliente(meuId, Environment.MachineName, cod); }
+            catch (Exception ex) { erro = ex is IOException || ex is SocketException ? ex.Message : "falha na conexão"; }
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    Cursor = Cursors.Default;
+                    if (par != null)
+                    {
+                        app.ParearCom(par, true);
+                        MessageBox.Show(this, "Pronto! Agora o painel mostra um botão para " + par.Nome + ".", "Sintonia", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    else MessageBox.Show(this, "Não deu para parear (" + erro + ").\n\nConfira o código, se ele ainda vale e se o outro PC está com \"Pode ser controlado\" ligado.",
+                        "Sintonia", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }));
+            }
+            catch { }
+        }) { IsBackground = true }.Start();
+    }
 
     // ---------------- desenho ----------------
     const TextFormatFlags TF = TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis |
