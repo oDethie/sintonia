@@ -80,7 +80,7 @@ Requisitos: Windows 10 (versão 2004 ou mais nova) ou Windows 11. O .NET Framewo
 
 ## Consumo
 
-Prioridade de processo baixa. Com o painel fechado: **0 ms de CPU** e poucos MB de RAM em uso. Não interfere em jogos.
+Medido em uso real (Ryzen 7 9800X3D): com o painel fechado, **0 ms de CPU** e **2 a 8 MB de RAM** em uso; com o painel aberto, ~0,26% de um núcleo; sem vazamento de memória. Programa de 177 KB, prioridade baixa, sem ganchos de teclado/mouse e sem nada desenhado por cima de jogos. Não interfere em jogos.
 
 ## Compilar o código
 

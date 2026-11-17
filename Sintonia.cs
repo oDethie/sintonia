@@ -19,8 +19,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 
 static class Program
 {
@@ -1749,7 +1749,13 @@ class Painel : Form
         KeyPreview = true;
         Text = "Sintonia";
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
-        tRecarregar.Tick += (s, e) => { if (Visible && arrastando == null && arrastoApp == null && !app.MenuAberto && !fechando) Recarregar(); };
+        tRecarregar.Tick += (s, e) =>
+        {
+            if (!Visible || arrastando != null || arrastoApp != null || app.MenuAberto || fechando) return;
+            // leve: a cada 1,5 s so confere os volumes que ja estao na tela; a lista inteira so a cada 6 s
+            // (apps novos e saidas ligadas/desligadas ja chegam na hora pelos avisos do Windows)
+            if (++ticks % 4 == 0) Recarregar(); else AtualizarValores();
+        };
         tAnim.Tick += (s, e) => PassoAnimacao();
     }
 
@@ -1960,6 +1966,31 @@ class Painel : Form
     }
 
     static bool Soltar(Disp d) { Audio.Liberar(new List<Disp> { d }); return true; }
+
+    int ticks;
+    // Relê so volume e mudo do que ja esta na tela (sem procurar dispositivos/apps de novo)
+    void AtualizarValores()
+    {
+        bool mudou = false;
+        foreach (var lista in new[] { saidas, entradas })
+            foreach (var d in lista)
+            {
+                try
+                {
+                    float v; bool m;
+                    if (d.Ep != null && d.Ep.GetMasterVolumeLevelScalar(out v) == 0 && d.Ep.GetMute(out m) == 0)
+                    {
+                        if (Math.Abs(v - d.Vol) > 0.004f || m != d.Mudo) { d.Vol = v; d.Mudo = m; mudou = true; }
+                    }
+                    foreach (var a in d.Apps)
+                        if (a.Vols.Count > 0 && a.Vols[0].GetMasterVolume(out v) == 0 && a.Vols[0].GetMute(out m) == 0)
+                            if (Math.Abs(v - a.Vol) > 0.004f || m != a.Mudo) { a.Vol = v; a.Mudo = m; mudou = true; }
+                }
+                catch { }
+            }
+        if (mudou) Invalidate();
+    }
+
     bool Guardar(Disp d) { escondidos[d.Fluxo].Add(new Esc { Id = d.Id, Nome = d.Nome, Glifo = Audio.Glifo(d) }); return true; }
 
     public void Recarregar()
