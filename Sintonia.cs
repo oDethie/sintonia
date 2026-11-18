@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.5.1.0")]
-[assembly: AssemblyFileVersion("1.5.1.0")]
+[assembly: AssemblyVersion("1.5.2.0")]
+[assembly: AssemblyFileVersion("1.5.2.0")]
 
 static class Program
 {
@@ -3595,6 +3595,7 @@ class Painel : Form
             catch { }
         a.Vol = v;
         if (v > 0) a.Mudo = false;
+        if (!a.Sistema) app.LembrarVolume(a.Exe, v);
     }
 
     void Clique(Zona z)
@@ -5203,6 +5204,34 @@ class App : ApplicationContext
         }
     }
 
+    // Volume de cada app (pelo nome do programa). O Windows guarda o volume pelo caminho do programa,
+    // que muda a cada atualizacao em apps como o WhatsApp: ai ele volta para 100%. O Sintonia lembra por conta propria.
+    public readonly Dictionary<string, float> VolApps = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+    Timer tSalvarVol;
+    public void LembrarVolume(string exe, float v)
+    {
+        if (!Lembrar || string.IsNullOrEmpty(exe)) return;
+        VolApps[exe] = v;
+        if (tSalvarVol == null) { tSalvarVol = new Timer { Interval = 1500 }; tSalvarVol.Tick += (s, e) => { tSalvarVol.Stop(); SalvarConfig(); }; }
+        tSalvarVol.Stop(); tSalvarVol.Start();   // grava uma vez so, quando parar de arrastar
+    }
+
+    // Devolve o volume lembrado aos apps que estao tocando (soExe: so esse app)
+    void RestaurarVolumes(string soExe)
+    {
+        if (!Lembrar || VolApps.Count == 0) return;
+        var ds = Audio.Listar(0, true, true, null, false);
+        foreach (var d in ds)
+            foreach (var g in d.Apps)
+            {
+                float v;
+                if (g.Sistema || g.Remoto || (soExe != null && !string.Equals(g.Exe, soExe, StringComparison.OrdinalIgnoreCase))) continue;
+                if (!VolApps.TryGetValue(g.Exe, out v) || Math.Abs(g.Vol - v) < 0.005f) continue;
+                foreach (var sv in g.Vols) try { sv.SetMasterVolume(v, ref Audio.Ctx); } catch { }
+            }
+        Audio.Liberar(ds);
+    }
+
     // Um app comecou a usar o som: aplica a saida lembrada e os perfis automaticos
     void SessaoNova(uint pid)
     {
@@ -5212,6 +5241,15 @@ class App : ApplicationContext
         if (recentes.Count > 200) recentes.Clear();
         string exe = Processos.Exe(pid);
         if (exe == null) return;
+
+        if (Lembrar && VolApps.ContainsKey(exe))
+        {
+            RestaurarVolumes(exe);
+            string so = exe;   // o app pode abrir mais de uma sessao logo depois: confere de novo
+            var tv = new Timer { Interval = 1200 };
+            tv.Tick += (s, e) => { tv.Stop(); tv.Dispose(); RestaurarVolumes(so); };
+            tv.Start();
+        }
 
         string id;
         if (Lembrar && Regras.TryGetValue(exe, out id) && Audio.Existe(id))
@@ -5834,6 +5872,7 @@ class App : ApplicationContext
                             float ant = a.Vol;
                             foreach (var sv in a.Vols) try { sv.SetMasterVolume(v, ref Audio.Ctx); if (a.Mudo && v > 0) sv.SetMute(false, ref Audio.Ctx); } catch { }
                             a.Vol = v; if (v > 0) a.Mudo = false;
+                            if (!a.Sistema) LembrarVolume(a.Exe, v);
                             if (Math.Abs(v - ant) > 0.004f) Atividade(a.Caminho, gA, v > ant ? 1 : -1);
                         }
                         else
@@ -6272,6 +6311,7 @@ class App : ApplicationContext
                     case "regra": { var a = v.Split('>'); if (a.Length == 2) Regras[a[0]] = a[1]; } break;
                     case "nome": { var a = v.Split('>'); if (a.Length == 2) Nomes[a[0]] = a[1]; } break;
                     case "oculto": Ocultos.Add(v); break;
+                    case "volapp": { var a = v.Split('>'); float fv; if (a.Length == 2 && float.TryParse(a[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out fv) && fv >= 0 && fv <= 1) VolApps[a[0]] = fv; } break;
                     case "alerta": { var a = v.Split('>'); if (a.Length == 2) AlertaVolume[a[0]] = a[1] == "1"; } break;
                     case "perfil": { var pf = LerPerfil(v); if (pf != null) Perfis.Add(pf); } break;
                     default:
@@ -6369,6 +6409,7 @@ class App : ApplicationContext
             foreach (var kv in Regras) l.Add("regra=" + kv.Key + ">" + kv.Value);
             foreach (var kv in Nomes) l.Add("nome=" + kv.Key + ">" + kv.Value);
             foreach (var o in Ocultos) l.Add("oculto=" + o);
+            foreach (var kv in VolApps) l.Add("volapp=" + kv.Key + ">" + kv.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
             foreach (var kv in AlertaVolume) l.Add("alerta=" + kv.Key + ">" + (kv.Value ? 1 : 0));
             foreach (var kv in Abertos) l.Add("aberto=" + kv.Key + ">" + (kv.Value ? 1 : 0));
             foreach (var p in Perfis)
