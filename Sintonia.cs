@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.6.0.0")]
-[assembly: AssemblyFileVersion("1.6.0.0")]
+[assembly: AssemblyVersion("1.6.1.0")]
+[assembly: AssemblyFileVersion("1.6.1.0")]
 
 static class Program
 {
@@ -66,6 +66,7 @@ static class Program
         if (args.Length == 5 && args[0] == "--testemover") { TesteMover(args[1], args[2], args[3], args[4]); return; }
         if (args.Length == 2 && args[0] == "--testeopcoes") { App.TesteOpcoes(args[1]); return; }
         if (args.Length == 2 && args[0] == "--testerede") { TesteRede(args[1]); return; }
+        if (args.Length == 2 && args[0] == "--testeestado") { var l = Audio.Listar(0, true, true, null); File.WriteAllText(args[1], App.EstadoTexto(l)); Audio.Liberar(l); return; }
         if (args.Length == 1 && args[0] == "--apagar-identidade") { Rede.ApagarIdentidade(); return; }
         // so para quem publica: assina o .exe de uma versao (chave que fica guardada neste PC)
         if (args.Length == 2 && args[0] == "--assinar") { File.WriteAllText(args[1] + ".pub.txt", Atualizador.Assinar(args[1])); return; }
@@ -2154,7 +2155,7 @@ class Painel : Form
         if (partesAnim.TryGetValue(k, out f)) return f;
         return partesAbertas.Contains(k) ? 1f : 0f;
     }
-    static bool TemPartes(GrupoApp a) { return a != null && !a.Sistema && !a.Remoto && a.Partes.Count > 1; }
+    static bool TemPartes(GrupoApp a) { return a != null && !a.Sistema && a.Partes.Count > 1; }
     bool PartesAbertas(Disp d, GrupoApp a) { return TemPartes(a) && partesAbertas.Contains(d.Id + "|" + a.Exe); }
     bool listaPerfis; float listaAb;     // lista suspensa dos perfis (abre dentro do painel)
 
@@ -2250,6 +2251,14 @@ class Painel : Form
                     var a = new GrupoApp { Remoto = true, Exe = c[2], Nome = c[3], Vol = float.Parse(c[4], inv), Mudo = c[5] == "1", Ativo = c[6] == "1",
                                            Saida = c[7].Length == 0 ? null : c[7], Sistema = c[8] == "1" };
                     d.Apps.Add(a);
+                }
+                else if (c[0] == "P" && c.Length >= 7)
+                {
+                    Disp d;
+                    if (!porId.TryGetValue(c[1], out d)) continue;
+                    var a = d.Apps.Find(x => x.Exe == c[2]);
+                    if (a == null) continue;
+                    a.Partes.Add(new ParteApp { Pid = uint.Parse(c[3]), Nome = c[4], Vol = float.Parse(c[5], inv), Mudo = c[6] == "1" });
                 }
             }
             catch { }
@@ -3390,7 +3399,7 @@ class Painel : Form
         // icone do proprio app, menor (clicar = mudo daquela janela); mudo: apagadinho com o selo de mudo, igual aos apps
         int ti = E(18);
         var rImg = new Rectangle(rIc.X + (rIc.Width - ti) / 2, rIc.Y + (rIc.Height - ti) / 2, ti, ti);
-        Bitmap bmp = a.Caminho != null ? Processos.Icone(a.Caminho, ti) : null;
+        Bitmap bmp = a.Caminho != null ? Processos.Icone(a.Caminho, ti) : a.Remoto ? IconeRemoto(a) : null;
         if (bmp != null)
         {
             if (pt.Mudo)
@@ -3446,6 +3455,13 @@ class Painel : Form
         if (a == null || i < 0 || i >= a.Partes.Count) return;
         var pt = a.Partes[i];
         v = Math.Max(0f, Math.Min(1f, v));
+        if (a.Remoto)   // janela de um app do outro PC: manda o pedido pela rede
+        {
+            pt.Vol = v; if (v > 0) pt.Mudo = false;
+            var d = saidas.Find(x => x.Apps.Contains(a));
+            if (d != null) EnviarRemoto("vp|" + d.Id + "|" + a.Exe + "|" + pt.Pid, "volp\t" + d.Id + "\t" + a.Exe + "\t" + pt.Pid + "\t" + Num(v), false);
+            return;
+        }
         foreach (var s in pt.Vols) try { s.SetMasterVolume(v, ref Audio.Ctx); if (pt.Mudo && v > 0) s.SetMute(false, ref Audio.Ctx); } catch { }
         pt.Vol = v;
         if (v > 0) pt.Mudo = false;
@@ -3915,7 +3931,9 @@ class Painel : Form
                 {
                     var pt = z.G.Partes[z.F];
                     bool pm = !pt.Mudo;
-                    foreach (var s in pt.Vols) try { s.SetMute(pm, ref Audio.Ctx); } catch { }
+                    if (z.G.Remoto)
+                        EnviarRemoto("mp|" + z.D.Id + "|" + z.G.Exe + "|" + pt.Pid, "mudop\t" + z.D.Id + "\t" + z.G.Exe + "\t" + pt.Pid + "\t" + (pm ? 1 : 0), false);
+                    else foreach (var s in pt.Vols) try { s.SetMute(pm, ref Audio.Ctx); } catch { }
                     pt.Mudo = pm;
                     Invalidate();
                 }
@@ -6044,6 +6062,28 @@ class App : ApplicationContext
         return remCache;
     }
 
+    // O que este PC manda para quem o controla: saidas/microfones (D), apps (A) e janelas de cada app (P)
+    public static string EstadoTexto(List<Disp> lista)
+    {
+        var sb = new StringBuilder();
+        foreach (var d in lista)
+        {
+            sb.Append("D\t").Append(d.Fluxo).Append('\t').Append(T(d.Id)).Append('\t').Append(T(d.Nome)).Append('\t').Append(d.Forma)
+              .Append('\t').Append(d.Padrao ? 1 : 0).Append('\t').Append(N(d.Vol)).Append('\t').Append(d.Mudo ? 1 : 0)
+              .Append('\t').Append(T(d.Adaptador)).Append('\n');
+            foreach (var a in d.Apps)
+                sb.Append("A\t").Append(T(d.Id)).Append('\t').Append(T(a.Exe)).Append('\t').Append(T(a.Nome)).Append('\t').Append(N(a.Vol))
+                  .Append('\t').Append(a.Mudo ? 1 : 0).Append('\t').Append(a.Ativo ? 1 : 0).Append('\t').Append(T(a.Saida))
+                  .Append('\t').Append(a.Sistema ? 1 : 0).Append('\n');
+            foreach (var a in d.Apps)
+                if (!a.Sistema && a.Partes.Count > 1)
+                    foreach (var pt in a.Partes)
+                        sb.Append("P\t").Append(T(d.Id)).Append('\t').Append(T(a.Exe)).Append('\t').Append(pt.Pid).Append('\t').Append(T(pt.Nome))
+                          .Append('\t').Append(N(pt.Vol)).Append('\t').Append(pt.Mudo ? 1 : 0).Append('\n');
+        }
+        return sb.ToString();
+    }
+
     public string ExecutarRemoto(string pedido)
     {
         try
@@ -6054,20 +6094,7 @@ class App : ApplicationContext
             switch (c[0])
             {
                 case "estado":
-                    {
-                        var sb = new StringBuilder();
-                        foreach (var d in ListaRemota(true))
-                        {
-                            sb.Append("D\t").Append(d.Fluxo).Append('\t').Append(T(d.Id)).Append('\t').Append(T(d.Nome)).Append('\t').Append(d.Forma)
-                              .Append('\t').Append(d.Padrao ? 1 : 0).Append('\t').Append(N(d.Vol)).Append('\t').Append(d.Mudo ? 1 : 0)
-                              .Append('\t').Append(T(d.Adaptador)).Append('\n');
-                            foreach (var a in d.Apps)
-                                sb.Append("A\t").Append(T(d.Id)).Append('\t').Append(T(a.Exe)).Append('\t').Append(T(a.Nome)).Append('\t').Append(N(a.Vol))
-                                  .Append('\t').Append(a.Mudo ? 1 : 0).Append('\t').Append(a.Ativo ? 1 : 0).Append('\t').Append(T(a.Saida))
-                                  .Append('\t').Append(a.Sistema ? 1 : 0).Append('\n');
-                        }
-                        return sb.ToString();
-                    }
+                    return EstadoTexto(ListaRemota(true));
                 case "icone":
                     {
                         foreach (var d in ListaRemota(false))
@@ -6118,6 +6145,30 @@ class App : ApplicationContext
                         {
                             a.Mudo = c[3] == "1"; foreach (var sv in a.Vols) try { sv.SetMute(a.Mudo, ref Audio.Ctx); } catch { }
                             Atividade(a.Caminho, gA, a.Mudo ? 2 : 3);
+                        }
+                        return "ok";
+                    }
+                case "volp":
+                case "mudop":
+                    {
+                        var d = ListaRemota(false).Find(x => x.Id == c[1]);
+                        var a = d == null ? null : d.Apps.Find(x => T(x.Exe) == c[2]);
+                        uint pid;
+                        if (a == null || c.Length < 5 || !uint.TryParse(c[3], out pid)) return "nao";
+                        var pt = a.Partes.Find(q => q.Pid == pid);
+                        if (pt == null) return "nao";
+                        if (c[0] == "volp")
+                        {
+                            float v = Math.Max(0f, Math.Min(1f, float.Parse(c[4], inv)));
+                            float ant = pt.Vol;
+                            foreach (var sv in pt.Vols) try { sv.SetMasterVolume(v, ref Audio.Ctx); if (pt.Mudo && v > 0) sv.SetMute(false, ref Audio.Ctx); } catch { }
+                            pt.Vol = v; if (v > 0) pt.Mudo = false;
+                            if (Math.Abs(v - ant) > 0.004f) Atividade(a.Caminho, '\uE8D6', v > ant ? 1 : -1);
+                        }
+                        else
+                        {
+                            pt.Mudo = c[4] == "1"; foreach (var sv in pt.Vols) try { sv.SetMute(pt.Mudo, ref Audio.Ctx); } catch { }
+                            Atividade(a.Caminho, '\uE8D6', pt.Mudo ? 2 : 3);
                         }
                         return "ok";
                     }

@@ -20,7 +20,7 @@ O controle de volume do Windows esconde o que mais importa: trocar a saída (fon
 - **Painel na bandeja** com todas as saídas e microfones, cada um com volume e mudo.
 - **Alerta de volume alto** nos fones: acima de 70% a barra fica vermelha e o cartão ganha uma faixa vermelha na lateral enquanto estiver alto (liga/desliga em qualquer saída pelo clique direito).
 - **Volume e mudo de cada app**, agrupados na saída onde o app está tocando. O volume que você escolhe para um app é **lembrado**: se o Windows "esquecer" (ex.: o WhatsApp volta a 100% depois de atualizar ou reiniciar), o Sintonia devolve o seu volume quando o app volta a tocar.
-- **Volume de cada janela:** quando um app está aberto mais de uma vez com som (ex.: dois players), o ícone dele aparece empilhado; com um clique duplo na linha dele, cada janela aparece logo abaixo, com volume e mudo próprios.
+- **Volume de cada janela:** quando um app está aberto mais de uma vez com som (ex.: dois players), o ícone dele aparece empilhado; com um clique duplo na linha dele, cada janela aparece logo abaixo, com volume e mudo próprios. Funciona também controlando outro PC (os dois precisam estar na 1.6.1 ou mais nova).
 - **Saída de cada app:** arraste o app para outra saída, ou use o **⋯** / clique direito no app. A escolha é **garantida**: se o Windows "esquecer", o Sintonia coloca o app de volta na saída certa.
 - **Usar como padrão** com um botão próprio (sem trocar por engano). A saída padrão tem uma barrinha discreta na lateral.
 - **Organize do seu jeito:** arraste as saídas para mudar a ordem, recolha/expanda com a setinha, renomeie ("Fone", "Caixa", "Monitor") e esconda o que não usa (o olhinho mostra os escondidos).
