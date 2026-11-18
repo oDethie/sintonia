@@ -3308,14 +3308,15 @@ class Painel : Form
         if (arrastado) Fundo(g, rLinha, Color.FromArgb(45, cAcento), E(6));
         else if (linhaSobre && movel) Fundo(g, rLinha, cHover, E(6));
 
-        // pontinhos de "pegar" a linha (aparecem ao passar o mouse)
+        // fundo do icone ao passar o mouse: um pouco mais estreito, para nao cobrir os pontinhos de pegar
+        if (Sobre(Z_MUDO_A, d, a, null)) Fundo(g, new Rectangle(rIc.X + E(4), rIc.Y, rIc.Width - E(6), rIc.Height), ControlPaint.Light(cHover, 0.1f), E(5));
+
+        // pontinhos de "pegar" a linha (aparecem ao passar o mouse); desenhados depois, ficam sempre visiveis
         if (linhaSobre && movel)
             using (var b = new SolidBrush(cFraco))
                 for (int i = 0; i < 3; i++)
                     for (int j = 0; j < 2; j++)
-                        g.FillRectangle(b, x0 + E(7) + j * E(4), y + h / 2 - E(5) + i * E(4), Math.Max(1, E(2)), Math.Max(1, E(2)));
-
-        if (Sobre(Z_MUDO_A, d, a, null)) Fundo(g, rIc, ControlPaint.Light(cHover, 0.1f), E(5));
+                        g.FillRectangle(b, x0 + E(5) + j * E(4), y + h / 2 - E(5) + i * E(4), Math.Max(1, E(2)), Math.Max(1, E(2)));
         var rImg = new Rectangle(colIcone - ti / 2, rIc.Y + (rIc.Height - ti) / 2, ti, ti);
         Bitmap bmp = a.Caminho != null ? Processos.Icone(a.Caminho, ti) : a.Remoto ? IconeRemoto(a) : null;
         if (multi)   // varias janelas: uma copia apagadinha atras do icone, como cartas empilhadas
