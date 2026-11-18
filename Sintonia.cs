@@ -2692,8 +2692,27 @@ class Painel : Form
                         if (Math.Abs(v - d.Vol) > 0.004f || m != d.Mudo) { d.Vol = v; d.Mudo = m; mudou = true; }
                     }
                     foreach (var a in d.Apps)
-                        if (a.Vols.Count > 0 && a.Vols[0].GetMasterVolume(out v) == 0 && a.Vols[0].GetMute(out m) == 0)
+                    {
+                        if (a.Vols.Count == 0) continue;
+                        if (a.Partes.Count > 1)
+                        {
+                            // varias janelas: cada uma tem o seu volume/mudo; o app so fica mudo se todas estiverem
+                            bool todas = true;
+                            foreach (var pt in a.Partes)
+                            {
+                                float pv; bool pmTodos = true, leu = false;
+                                foreach (var sv in pt.Vols) { bool mm; if (sv.GetMute(out mm) == 0) { pmTodos = pmTodos && mm; leu = true; } }
+                                if (leu && pmTodos != pt.Mudo) { pt.Mudo = pmTodos; mudou = true; }
+                                if (pt.Vols.Count > 0 && pt.Vols[0].GetMasterVolume(out pv) == 0 && Math.Abs(pv - pt.Vol) > 0.004f) { pt.Vol = pv; mudou = true; }
+                                todas = todas && pt.Mudo;
+                            }
+                            if (todas != a.Mudo) { a.Mudo = todas; mudou = true; }
+                            if (a.Vols[0].GetMasterVolume(out v) == 0 && Math.Abs(v - a.Vol) > 0.004f) { a.Vol = v; mudou = true; }
+                            continue;
+                        }
+                        if (a.Vols[0].GetMasterVolume(out v) == 0 && a.Vols[0].GetMute(out m) == 0)
                             if (Math.Abs(v - a.Vol) > 0.004f || m != a.Mudo) { a.Vol = v; a.Mudo = m; mudou = true; }
+                    }
                 }
                 catch { }
             }
@@ -3267,6 +3286,9 @@ class Painel : Form
     {
         bool movel = !a.Sistema && (a.Remoto || (Politica.Disponivel && a.Pids.Count > 0));
         var rLinha = new Rectangle(x0 + E(4), y, cw - E(8), h);
+        // com as janelas abertas, o grupo todo (app + janelas) e uma coisa so: mesmo fundo no hover e mesma area
+        int hJanelas = TemPartes(a) ? (int)Math.Round((a.Partes.Count * E(46) + E(4)) * FracPartes(d, a)) : 0;
+        if (hJanelas > 0) rLinha.Height += hJanelas - E(2);
         // A linha inteira pode ser arrastada para outra saida (fica por baixo das outras zonas)
         if (movel) Add(rLinha, Z_NOME_A, d, a, null);
         else if (TemPartes(a)) Add(rLinha, Z_PARTES, d, a, null);   // fundo da linha para o clique duplo
@@ -3364,7 +3386,29 @@ class Painel : Form
         var zs = Add(rSl, Z_SLIDER_P, d, a, null); zs.F = i;
         if (g == null) return;
         if (SobreParte(Z_MUDO_P, a, i)) Fundo(g, rIc, ControlPaint.Light(cHover, 0.1f), E(5));
-        TextRenderer.DrawText(g, (pt.Mudo ? '\uE74F' : '\uE767').ToString(), fGlifoP, rIc, cFraco, TC);
+        // icone do proprio app, menor (clicar = mudo daquela janela); mudo: apagadinho com o selo de mudo, igual aos apps
+        int ti = E(18);
+        var rImg = new Rectangle(rIc.X + (rIc.Width - ti) / 2, rIc.Y + (rIc.Height - ti) / 2, ti, ti);
+        Bitmap bmp = a.Caminho != null ? Processos.Icone(a.Caminho, ti) : null;
+        if (bmp != null)
+        {
+            if (pt.Mudo)
+                using (var ia = new System.Drawing.Imaging.ImageAttributes())
+                {
+                    ia.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = 0.35f });
+                    g.DrawImage(bmp, rImg, 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, ia);
+                }
+            else g.DrawImage(bmp, rImg);
+        }
+        else TextRenderer.DrawText(g, "\uE8D6", fGlifoP, rIc, pt.Mudo ? cFraco : cTexto, TC);
+        if (pt.Mudo)
+        {
+            var rb = new Rectangle(rImg.Right - E(9), rImg.Bottom - E(9), E(12), E(12));
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var b = new SolidBrush(cCartao)) g.FillEllipse(b, rb);
+            g.SmoothingMode = SmoothingMode.None;
+            TextRenderer.DrawText(g, "\uE74F", fGlifoP, rb, cTexto, TC);
+        }
         TextRenderer.DrawText(g, pt.Nome, fPequena, new Rectangle(xt, y + E(2), cw - (xt - x0) - E(16), E(20)),
             pt.Mudo ? cFraco : cTexto, TF);
         Slider(g, rSl, pt.Vol, pt.Mudo, SobreParte(Z_SLIDER_P, a, i), false);
