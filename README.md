@@ -18,7 +18,7 @@ O controle de volume do Windows esconde o que mais importa: trocar a saída (fon
 ## Recursos
 
 - **Painel na bandeja** com todas as saídas e microfones, cada um com volume e mudo.
-- **Alerta de volume alto** nos fones: acima de 70% a barra fica vermelha e aparece um aviso ao lado do nome enquanto estiver alto (liga/desliga em qualquer saída pelo clique direito).
+- **Alerta de volume alto** nos fones: acima de 70% a barra fica vermelha e o cartão ganha uma faixa vermelha na lateral enquanto estiver alto (liga/desliga em qualquer saída pelo clique direito).
 - **Volume e mudo de cada app**, agrupados na saída onde o app está tocando.
 - **Saída de cada app:** arraste o app para outra saída, ou use o **⋯** / clique direito no app. A escolha é **garantida**: se o Windows "esquecer", o Sintonia coloca o app de volta na saída certa.
 - **Usar como padrão** com um botão próprio (sem trocar por engano). A saída padrão tem uma barrinha discreta na lateral.

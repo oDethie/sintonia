@@ -3061,6 +3061,10 @@ class Painel : Form
         int colIcone = x0 + E(26);   // centro da coluna dos icones
         int xTexto = x0 + E(50);
 
+        // Volume alto: faixa vermelha na lateral do cartao enquanto passar do limite
+        if (g != null && app.AlertaAtivo(d) && rc.Height > E(24))
+            Fundo(g, new Rectangle(x0, rc.Y + E(10), Math.Max(2, E(3)), rc.Height - E(20)), cAlto, E(1.5f));
+
         // Saida/microfone padrao: barrinha fina na cor de destaque na borda esquerda (como a selecao do menu)
         if (d.Padrao && g != null)
             Fundo(g, new Rectangle(x0, y + E(4) + (hLinha1 - E(4)) / 2 - E(9), Math.Max(2, E(3)), E(18)), cAcento, E(1));
@@ -3117,8 +3121,7 @@ class Painel : Form
             }
             int nomeW = Math.Max(E(20), direita - xTexto);
             bool comSom = app.MostrarSom && d.Medidor != null;
-            bool altoCab = app.AlertaAtivo(d);
-            int nomeVis = Math.Max(E(20), nomeW - (comSom ? LarguraMed() + E(14) : 0) - (altoCab ? E(30) : 0));
+            int nomeVis = Math.Max(E(20), nomeW - (comSom ? LarguraMed() + E(14) : 0));
             int nw = Math.Min(nomeVis, TextRenderer.MeasureText(g, d.Nome, fNegrito, Size.Empty, TextFormatFlags.NoPadding).Width);
             TextRenderer.DrawText(g, d.Nome, d.Padrao ? fNegrito : fNormal, new Rectangle(xTexto, r1.Y, nomeVis, r1.Height), cTexto, TF);
             int xm = xTexto + nw + E(10);
@@ -3127,11 +3130,6 @@ class Painel : Form
                 Medidor(g, xm, r1.Y + r1.Height / 2, hovCab ? cHover : cCartao, "d|" + d.Id, d.Medidor, null);
                 xm += LarguraMed() + E(4);
                 nw += LarguraMed() + E(14);
-            }
-            if (altoCab)   // alerta de volume alto: fica ai enquanto passar do limite
-            {
-                TextRenderer.DrawText(g, "\uE7BA", fGlifo, new Rectangle(xm + E(4), r1.Y, E(20), r1.Height), cAlto, TC);
-                nw += E(24);
             }
             if (app.MostrarAdaptador && !string.IsNullOrEmpty(d.Adaptador) && nomeW - nw > E(40))
                 TextRenderer.DrawText(g, d.Adaptador, fPequena, new Rectangle(xTexto + nw + E(8), r1.Y + E(1), nomeW - nw - E(8), r1.Height), cFraco, TF);
