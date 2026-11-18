@@ -35,9 +35,8 @@ O controle de volume do Windows esconde o que mais importa: trocar a saída (fon
 ## Como instalar
 
 1. Baixe o **`Sintonia.exe`** na página de [**Releases**](../../releases/latest).
-2. Coloque o arquivo numa pasta fixa, por exemplo `C:\Users\<você>\AppData\Local\Programs\Sintonia\`.
-3. Dê dois cliques nele. O ícone do Sintonia aparece perto do relógio (e já fica fixado na barra).
-4. Na primeira vez ele já passa a **iniciar com o Windows** (dá para desligar em Configurações ▸ Geral).
+2. Abra. Ele pergunta se quer instalar: clique em **Instalar**. Pronto: ele fica em `%LOCALAPPDATA%\Programs\Sintonia`, aparece no menu Iniciar e em *Configurações ▸ Aplicativos*, e passa a **iniciar com o Windows** (dá para desligar em Configurações ▸ Geral). Não precisa de administrador.
+3. Para atualizar, o Sintonia se atualiza sozinho; ou abra um `Sintonia.exe` mais novo e clique em **Atualizar**.
 
 > **Aviso do Windows (SmartScreen):** como o programa é novo e não tem assinatura digital paga, o Windows pode mostrar *"O Windows protegeu o computador"*. Clique em **Mais informações ▸ Executar assim mesmo**.
 >
@@ -131,12 +130,9 @@ Gera o `Sintonia.exe` na mesma pasta. O código inteiro está em [`Sintonia.cs`]
 
 ## Desinstalar
 
-1. Em Configurações ▸ Geral, desligue **Iniciar com o Windows** e **Atalho no menu Iniciar**.
-2. Clique com o botão direito no ícone ▸ **Sair**.
-3. Se usou **Outros PCs**, rode `Sintonia.exe --apagar-identidade` (apaga a chave do PC guardada pelo Windows).
-4. Apague o `Sintonia.exe` e os arquivos `%APPDATA%\Sintonia.ini` e `%APPDATA%\Sintonia.log`.
+Em *Configurações do Windows ▸ Aplicativos ▸ Sintonia ▸ Desinstalar* (ou no botão **Desinstalar o Sintonia**, nas configurações do próprio Sintonia, ou `Sintonia.exe --desinstalar`).
 
-Não fica mais nada no sistema.
+Ele remove o programa, o atalho, o início com o Windows, as configurações e a identidade de **Outros PCs**, e devolve todos os apps à saída de som padrão. Não fica mais nada no sistema.
 
 ## Licença
 

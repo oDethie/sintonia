@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.4.0.0")]
-[assembly: AssemblyFileVersion("1.4.0.0")]
+[assembly: AssemblyVersion("1.5.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]
 
 static class Program
 {
@@ -72,6 +72,13 @@ static class Program
         if (args.Length == 2 && args[0] == "--testeatualizar") { File.WriteAllLines(args[1], Atualizador.Teste()); return; }
         if (args.Length >= 1 && args[0] == "--atualizado") { Atualizado = true; args = new string[0]; }
         if (args.Length == 2 && args[0] == "--testecontrole") { TesteControle(args[1]); return; }
+        if (args.Length == 1 && args[0] == "--desinstalar") { Application.EnableVisualStyles(); Instalador.Desinstalar(); return; }
+        // aberto de fora da pasta de programas (ex.: Downloads): oferece instalar
+        if (args.Length == 0 && !Atualizado && !Instalador.EstaInstalado)
+        {
+            Application.EnableVisualStyles();
+            if (!Instalador.Oferecer(Instalador.TemaEscuroSistema())) return;
+        }
         if (args.Length >= 1 && args[args.Length - 1] == "--so-local") { Rede.SoLocal = true; Array.Resize(ref args, args.Length - 1); }
         MsgAbrir = RegisterWindowMessage("Sintonia_AbrirPainel");
         MsgConfig = RegisterWindowMessage("Sintonia_AbrirConfig");
@@ -1435,53 +1442,48 @@ static class Desenho
     // (desenho em grade 64x64)
     public static Bitmap Logo(int n)
     {
+        // anel roxo de volume (como um botao de volume) com um alto-falante no centro
         var bmp = new Bitmap(n, n, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            float u = n / 64f;
-            using (var p = Arred(new RectangleF(2 * u, 2 * u, 60 * u, 60 * u), 15 * u))
-            using (var b = new LinearGradientBrush(new PointF(0, 0), new PointF(n, n), Color.FromArgb(139, 124, 246), Color.FromArgb(74, 53, 201)))
-                g.FillPath(b, p);
-            float cx = 32 * u, cy = 33 * u, r = 19 * u;
-            var arco = new RectangleF(cx - r, cy - r, r * 2, r * 2);
-            using (var pn = new Pen(Color.FromArgb(115, 255, 255, 255), Math.Max(1f, 4.5f * u)) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                g.DrawArc(pn, arco, 142, 256);   // trilho
-            using (var pn = new Pen(Color.White, Math.Max(1f, 4.5f * u)) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-            {
-                g.DrawArc(pn, arco, 142, 146);   // nivel
-                pn.Width = Math.Max(1f, 3f * u);
-                double ang = (142 + 146) * Math.PI / 180;
-                g.DrawLine(pn, cx, cy, cx + (float)Math.Cos(ang) * (r - 3 * u), cy + (float)Math.Sin(ang) * (r - 3 * u));
-            }
-            using (var b = new SolidBrush(Color.White)) g.FillEllipse(b, cx - 8 * u, cy - 8 * u, 16 * u, 16 * u);
+            DesenharAnel(g, n, Color.FromArgb(150, 110, 255), Color.FromArgb(60, 140, 130, 170), Color.FromArgb(150, 110, 255), false);
         }
         return bmp;
+    }
+
+    // desenho comum do logo e do icone da bandeja (grade 64x64)
+    static void DesenharAnel(Graphics g, int n, Color arco, Color trilho, Color falante, bool mudo)
+    {
+        float u = n / 64f, esp = Math.Max(1.6f, 7 * u);
+        float raio = 28 * u - esp / 2;
+        var r = new RectangleF(32 * u - raio, 32 * u - raio, 2 * raio, 2 * raio);
+        using (var pn = new Pen(trilho, esp)) g.DrawEllipse(pn, r);
+        using (var pn = new Pen(arco, esp) { StartCap = LineCap.Round, EndCap = LineCap.Round }) g.DrawArc(pn, r, 135, 230);
+        var pts = new[] { new PointF(-14, -6), new PointF(-6, -6), new PointF(6, -16), new PointF(6, 16), new PointF(-6, 6), new PointF(-14, 6) };
+        for (int i = 0; i < pts.Length; i++) pts[i] = new PointF((32 + pts[i].X * 0.75f) * u, (32 + pts[i].Y * 0.75f) * u);
+        using (var b = new SolidBrush(falante)) g.FillPolygon(b, pts);
+        if (mudo)
+        {
+            g.CompositingMode = CompositingMode.SourceCopy;
+            using (var pn = new Pen(Color.Transparent, 15 * u)) g.DrawLine(pn, 6 * u, 6 * u, 58 * u, 58 * u);
+            g.CompositingMode = CompositingMode.SourceOver;
+            using (var pn = new Pen(falante, 6.5f * u) { StartCap = LineCap.Round, EndCap = LineCap.Round }) g.DrawLine(pn, 8 * u, 8 * u, 56 * u, 56 * u);
+        }
     }
 
     // Icone da bandeja: so o botao giratorio, de uma cor (branco na barra escura,
     // preto na clara). No mudo ganha um risco atravessado.
     public static Bitmap Bandeja(int n, Color cor, bool mudo)
     {
+        // icone do relogio: o mesmo anel do logo, de uma cor so (branco na barra escura, preto na clara)
         var bmp = new Bitmap(n, n, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            float u = n / 64f;
-            float cx = 32 * u, cy = 35 * u, r = 25 * u;
-            using (var pn = new Pen(cor, 7.5f * u) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                g.DrawArc(pn, new RectangleF(cx - r, cy - r, r * 2, r * 2), 144, 252);
-            using (var b = new SolidBrush(cor)) g.FillEllipse(b, cx - 11 * u, cy - 11 * u, 22 * u, 22 * u);
-            if (mudo)
-            {
-                g.CompositingMode = CompositingMode.SourceCopy;
-                using (var pn = new Pen(Color.Transparent, 15 * u)) g.DrawLine(pn, 6 * u, 6 * u, 58 * u, 58 * u);
-                g.CompositingMode = CompositingMode.SourceOver;
-                using (var pn = new Pen(cor, 6.5f * u) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                    g.DrawLine(pn, 8 * u, 8 * u, 56 * u, 56 * u);
-            }
+            DesenharAnel(g, n, cor, Color.FromArgb(90, cor), cor, mudo);
         }
         return bmp;
     }
@@ -3934,7 +3936,9 @@ class Mensageiro : NativeWindow
 
     public Action<int> Atalho;
     public Action<int> Roda;
-    public Action Tema, Abrir;
+    public Action Tema, Abrir, Sair;
+    readonly uint msgSair = RegisterWindowMessage("Sintonia_Sair");
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern uint RegisterWindowMessage(string s);
     public Action<int> Config, Perfil;
     public Action Pedido;
     public bool Capturando { get; private set; }
@@ -3977,6 +3981,7 @@ class Mensageiro : NativeWindow
             if (s == "ImmersiveColorSet") Tema();
         }
         else if (m.Msg == (int)Program.MsgAbrir && Abrir != null) Abrir();
+        else if (m.Msg == (int)msgSair && Sair != null) Sair();
         else if (m.Msg == (int)Program.MsgConfig && Config != null) Config(m.WParam.ToInt32());
         else if (m.Msg == (int)Program.MsgPerfil && Perfil != null) Perfil(m.WParam.ToInt32());
         else if (m.Msg == (int)Program.MsgPedido && Pedido != null) Pedido();
@@ -4812,6 +4817,7 @@ class App : ApplicationContext
         msg.Atalho = AoAtalho;
         msg.Tema = () => { chaveIcone = null; AtualizarIcone(); };
         msg.Abrir = () => { if (!painel.Visible) painel.Mostrar(); };
+        msg.Sair = () => Sair();
         msg.Config = pg => AbrirConfiguracoes(pg);
         msg.Perfil = i => { if (i >= 0 && i < Perfis.Count) { AplicarPerfil(Perfis[i], true); PainelMudou(); } };
         msg.Pedido = () =>
@@ -4889,6 +4895,8 @@ class App : ApplicationContext
             else ConferirInicio();
         }) { IsBackground = true, Priority = ThreadPriority.Lowest }.Start();
         if (primeiraVez) SalvarConfig();
+        // instalado na pasta de programas: aparece em Configuracoes > Aplicativos e no menu Iniciar
+        if (Instalador.EstaInstalado) new Thread(Instalador.GarantirRegistro) { IsBackground = true, Priority = ThreadPriority.Lowest }.Start();
 
         // atualizacao automatica
         try { Atualizador.Limpar(Application.ExecutablePath); } catch { }
@@ -6726,6 +6734,8 @@ class Configuracoes : Form
             });
             Chave("Iniciar com o Windows", "Abre o Sintonia sozinho quando você entra no Windows", () => app.IniciaComWindows(), v => app.AlternarInicio());
             Chave("Atalho no menu Iniciar", "Cria um atalho para achar o Sintonia pesquisando no menu Iniciar", () => App.TemAtalhoIniciar(), v => App.AlternarAtalhoIniciar());
+            Botao("Desinstalar o Sintonia", "Remove o programa, o atalho, as configurações e devolve os apps à saída padrão (pede confirmação)", () => "",
+                r => { try { Process.Start(Application.ExecutablePath, "--desinstalar"); } catch { } });
 
             Cab("Atualizações");
             Chave("Atualizar sozinho", "A cada 12 horas confere no GitHub se há versão nova. Se houver, baixa, confere a assinatura digital e se atualiza quando você não estiver jogando em tela cheia",
@@ -7250,5 +7260,181 @@ class Configuracoes : Form
         base.OnActivated(e);
         Montar(); // volta de uma janelinha (atalho, nome): mostra os valores novos
         Invalidate();
+    }
+}
+
+// =====================================================================
+//  Instalador simples (o proprio Sintonia.exe se instala e se desinstala)
+//  Em %LOCALAPPDATA%\Programs\Sintonia, sem administrador: copia o exe, atalho no menu Iniciar
+//  e registro em Configuracoes do Windows > Aplicativos (para desinstalar por la).
+// =====================================================================
+static class Instalador
+{
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern uint RegisterWindowMessage(string s);
+
+    public static string Pasta { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Sintonia"); } }
+    public static string ExeInstalado { get { return Path.Combine(Pasta, "Sintonia.exe"); } }
+    static string Atalho { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "Sintonia.lnk"); } }
+    const string ChaveDesinstalar = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Sintonia";
+
+    public static bool EstaInstalado { get { return string.Equals(Path.GetFullPath(Application.ExecutablePath), Path.GetFullPath(ExeInstalado), StringComparison.OrdinalIgnoreCase); } }
+
+    public static bool TemaEscuroSistema()
+    {
+        try
+        {
+            using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+            { object v = k == null ? null : k.GetValue("AppsUseLightTheme"); if (v is int) return (int)v == 0; }
+        }
+        catch { }
+        return false;
+    }
+
+    // true = pode seguir abrindo este exe
+    public static bool Oferecer(bool escuro)
+    {
+        bool jaTem = File.Exists(ExeInstalado);
+        Version vNova = Atualizador.Atual, vVelha = null;
+        if (jaTem) try { var fv = FileVersionInfo.GetVersionInfo(ExeInstalado); vVelha = new Version(fv.FileMajorPart, fv.FileMinorPart, fv.FileBuildPart); } catch { }
+        string titulo = !jaTem ? "Instalar o Sintonia" : vVelha != null && vVelha < vNova ? "Atualizar o Sintonia" : "Reinstalar o Sintonia";
+        string texto = !jaTem
+            ? "Ele fica na sua pasta de programas, abre sozinho com o Windows e aparece no menu Iniciar. Não precisa de administrador."
+            : "O Sintonia já está instalado" + (vVelha != null ? " (versão " + vVelha.ToString(3) + ")" : "") + ". Instalar esta versão (" + vNova.ToString(3) + ") por cima? Suas configurações continuam.";
+        using (var f = new JanelaInstalar(titulo, texto, escuro))
+        {
+            var r = f.ShowDialog();
+            if (r == DialogResult.Cancel) return false;
+            if (r == DialogResult.No) return true;
+        }
+        string erro = Instalar();
+        if (erro != null) { MessageBox.Show("Não deu para instalar o Sintonia:\n" + erro, "Sintonia", MessageBoxButtons.OK, MessageBoxIcon.Warning); return true; }
+        try { Process.Start(ExeInstalado); } catch { }
+        return false;
+    }
+
+    static void FecharAberto()
+    {
+        PostMessage(new IntPtr(0xFFFF), RegisterWindowMessage("Sintonia_Sair"), IntPtr.Zero, IntPtr.Zero);
+        int eu = Process.GetCurrentProcess().Id;
+        for (int i = 0; i < 50; i++)
+        {
+            bool aberto = false;
+            foreach (var p in Process.GetProcessesByName("Sintonia")) if (p.Id != eu) aberto = true;
+            if (!aberto) return;
+            Thread.Sleep(100);
+        }
+        foreach (var p in Process.GetProcessesByName("Sintonia")) if (p.Id != eu) try { p.Kill(); p.WaitForExit(3000); } catch { }
+    }
+
+    static string Instalar()
+    {
+        try
+        {
+            FecharAberto();
+            Directory.CreateDirectory(Pasta);
+            File.Copy(Application.ExecutablePath, ExeInstalado, true);
+            Registrar(true);
+            return null;
+        }
+        catch (Exception ex) { return ex.Message; }
+    }
+
+    // ja instalado (ou atualizado sozinho): garante o atalho e o registro em Configuracoes > Aplicativos
+    public static void GarantirRegistro() { try { Registrar(false); } catch { } }
+
+    static void Registrar(bool sempre)
+    {
+        if (!File.Exists(Atalho)) CriarAtalho();
+        using (var k = Registry.CurrentUser.CreateSubKey(ChaveDesinstalar))
+        {
+            if (!sempre && k.GetValue("DisplayVersion") as string == Atualizador.Atual.ToString(3) && k.GetValue("UninstallString") != null) return;
+            k.SetValue("DisplayName", "Sintonia");
+            k.SetValue("DisplayIcon", ExeInstalado + ",0");
+            k.SetValue("DisplayVersion", Atualizador.Atual.ToString(3));
+            k.SetValue("Publisher", "oDethie");
+            k.SetValue("InstallLocation", Pasta);
+            k.SetValue("UninstallString", "\"" + ExeInstalado + "\" --desinstalar");
+            k.SetValue("URLInfoAbout", "https://github.com/" + Atualizador.Repo);
+            k.SetValue("NoModify", 1, RegistryValueKind.DWord);
+            k.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+            k.SetValue("EstimatedSize", (int)Math.Max(1, new FileInfo(ExeInstalado).Length / 1024), RegistryValueKind.DWord);
+        }
+    }
+
+    static void CriarAtalho()
+    {
+        var tipo = Type.GetTypeFromProgID("WScript.Shell");
+        object shell = Activator.CreateInstance(tipo);
+        object at = tipo.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { Atalho });
+        var ta = at.GetType();
+        ta.InvokeMember("TargetPath", BindingFlags.SetProperty, null, at, new object[] { ExeInstalado });
+        ta.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, at, new object[] { Pasta });
+        ta.InvokeMember("Description", BindingFlags.SetProperty, null, at, new object[] { "Saídas de som, volume por app e perfis" });
+        ta.InvokeMember("IconLocation", BindingFlags.SetProperty, null, at, new object[] { ExeInstalado + ",0" });
+        ta.InvokeMember("Save", BindingFlags.InvokeMethod, null, at, null);
+        Marshal.FinalReleaseComObject(at);
+        Marshal.FinalReleaseComObject(shell);
+    }
+
+    // Sintonia.exe --desinstalar (tambem pelo Windows: Configuracoes > Aplicativos)
+    public static void Desinstalar()
+    {
+        if (MessageBox.Show("Desinstalar o Sintonia?\n\nRemove o programa, o atalho, o início com o Windows e as configurações, e devolve todos os apps à saída de som padrão.",
+            "Sintonia", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        FecharAberto();
+        try { Politica.LimparTudo(); } catch { }          // apps voltam para a saida padrao
+        try { Rede.ApagarIdentidade(); } catch { }        // identidade usada em Outros PCs
+        try { Process.Start(new ProcessStartInfo("schtasks.exe", "/delete /tn \"Sintonia\" /f") { CreateNoWindow = true, UseShellExecute = false }).WaitForExit(10000); } catch { }
+        try { File.Delete(Atalho); } catch { }
+        try { Registry.CurrentUser.DeleteSubKeyTree(ChaveDesinstalar, false); } catch { }
+        string dados = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        try { File.Delete(Path.Combine(dados, "Sintonia.ini")); } catch { }
+        try { File.Delete(Path.Combine(dados, "Sintonia.log")); } catch { }
+        try
+        {
+            using (var k = Registry.CurrentUser.OpenSubKey(@"Control Panel\NotifyIconSettings", true))
+                if (k != null)
+                    foreach (var n in k.GetSubKeyNames())
+                    {
+                        string p; using (var s = k.OpenSubKey(n)) p = s == null ? null : s.GetValue("ExecutablePath") as string;
+                        if (p != null && p.EndsWith("\\Sintonia.exe", StringComparison.OrdinalIgnoreCase)) k.DeleteSubKeyTree(n, false);
+                    }
+        }
+        catch { }
+        string pasta = Path.GetDirectoryName(Application.ExecutablePath);
+        if (string.Equals(pasta, Pasta, StringComparison.OrdinalIgnoreCase))
+            try
+            {
+                Process.Start(new ProcessStartInfo("cmd.exe", "/c ping 127.0.0.1 -n 3 > nul & rmdir /s /q \"" + pasta + "\"")
+                { CreateNoWindow = true, UseShellExecute = false, WindowStyle = ProcessWindowStyle.Hidden });
+            }
+            catch { }
+        MessageBox.Show("O Sintonia foi desinstalado.", "Sintonia", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+}
+
+// janela "Instalar o Sintonia" no estilo do Windows 11
+class JanelaInstalar : JanelaBase
+{
+    public JanelaInstalar(string titulo, string texto, bool temaEscuro) : base(temaEscuro)
+    {
+        Text = "Sintonia";
+        ClientSize = new Size(E(460), E(220));
+        int x = E(24), w = ClientSize.Width - E(48), y = E(22);
+        Controls.Add(new PictureBox { Image = Desenho.Logo(E(40)), Size = new Size(E(40), E(40)), Location = new Point(x, y) });
+        Controls.Add(new Label { Text = titulo, Font = fTitulo, AutoSize = true, Location = new Point(x + E(52), y + E(4)), ForeColor = cTexto });
+        y += E(56);
+        Controls.Add(new Label { Text = texto, Font = fNormal, AutoSize = false, Size = new Size(w, E(64)), Location = new Point(x, y), ForeColor = cFraco });
+        var rodape = Rodape();
+        var bInstalar = Botao(titulo.StartsWith("Instalar") ? "Instalar" : titulo.StartsWith("Atualizar") ? "Atualizar" : "Reinstalar", true);
+        var bAbrir = Botao("Só abrir", false);
+        int by = (rodape.Height - E(34)) / 2;
+        bInstalar.Location = new Point(rodape.Width - E(24) - bInstalar.Width, by);
+        bAbrir.Location = new Point(bInstalar.Left - E(8) - bAbrir.Width, by);
+        rodape.Controls.AddRange(new Control[] { bInstalar, bAbrir });
+        bInstalar.Click += (s, e) => DialogResult = DialogResult.OK;
+        bAbrir.Click += (s, e) => DialogResult = DialogResult.No;
+        AcceptButton = bInstalar;
     }
 }
