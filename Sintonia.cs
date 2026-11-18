@@ -2145,6 +2145,15 @@ class Painel : Form
               Z_PARTES = 18, Z_SLIDER_P = 19, Z_MUDO_P = 20;   // janelas de um app: setinha, barra e mudo de cada uma
     // apps com as janelas abertas no painel (saida|exe); nao e guardado: o painel abre sempre fechado
     readonly HashSet<string> partesAbertas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, float> partesAnim = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);   // 0..1 enquanto abre/fecha
+    float FracPartes(Disp d, GrupoApp a)
+    {
+        if (!TemPartes(a)) return 0f;
+        string k = d.Id + "|" + a.Exe;
+        float f;
+        if (partesAnim.TryGetValue(k, out f)) return f;
+        return partesAbertas.Contains(k) ? 1f : 0f;
+    }
     static bool TemPartes(GrupoApp a) { return a != null && !a.Sistema && !a.Remoto && a.Partes.Count > 1; }
     bool PartesAbertas(Disp d, GrupoApp a) { return TemPartes(a) && partesAbertas.Contains(d.Id + "|" + a.Exe); }
     bool listaPerfis; float listaAb;     // lista suspensa dos perfis (abre dentro do painel)
@@ -2362,6 +2371,14 @@ class Painel : Form
                 if (Math.Abs(alvo - f) < 0.02f) f = alvo;
                 abertura[d.Id] = f; layout = true;
             }
+        foreach (var k in new List<string>(partesAnim.Keys))
+        {
+            float fpa = partesAnim[k], alvoP = partesAbertas.Contains(k) ? 1f : 0f;
+            if (fpa == alvoP) { partesAnim.Remove(k); continue; }
+            fpa += (alvoP - fpa) * 0.3f;
+            if (Math.Abs(alvoP - fpa) < 0.02f) fpa = alvoP;
+            partesAnim[k] = fpa; layout = true;
+        }
         float alvoL = listaPerfis ? 1f : 0f;
         if (listaAb != alvoL)
         {
@@ -2441,7 +2458,7 @@ class Painel : Form
 
     public void Mostrar()
     {
-        partesAbertas.Clear();   // as janelas de cada app sempre comecam recolhidas
+        partesAbertas.Clear(); partesAnim.Clear();   // as janelas de cada app sempre comecam recolhidas
         var pt = Cursor.Position;
         var tela = Screen.FromPoint(pt);
         area = App.AreaUtil(tela, out bordaBarra); telaB = tela.Bounds;
@@ -3098,7 +3115,7 @@ class Painel : Form
         float f = Abertura(d);
         int hFechado = hLinha1 + E(4);
         int hPartes = 0;
-        foreach (var a in d.Apps) if (PartesAbertas(d, a)) hPartes += a.Partes.Count * hParte + E(4);
+        foreach (var a in d.Apps) hPartes += (int)Math.Round((a.Partes.Count * hParte + E(4)) * FracPartes(d, a));
         int hAberto = hLinha1 + hLinha2 + E(4) + d.Apps.Count * hApp + hPartes + (d.Apps.Count > 0 ? E(6) : 0);
         int h = hFechado + (int)Math.Round((hAberto - hFechado) * f);
         var rc = new Rectangle(x0, y, cw, h);
@@ -3220,12 +3237,25 @@ class Painel : Form
                 {
                     AppLinha(g, d, a, ya, x0, cw, colIcone, xTexto, hApp);
                     ya += hApp;
-                    if (PartesAbertas(d, a))
+                    float fp = FracPartes(d, a);
+                    if (fp > 0.001f)
                     {
-                        int yPai = ya - hApp, yIni = ya;
-                        for (int i = 0; i < a.Partes.Count; i++) { ParteLinha(g, d, a, i, ya, x0, cw, colIcone, xTexto, hParte); ya += hParte; }
+                        int hVis = (int)Math.Round((a.Partes.Count * hParte + E(4)) * fp);
+                        int yPai = ya - hApp, yIni = ya, nzP = zonas.Count;
+                        Region clipP = null;
+                        if (g != null && fp < 1f) { clipP = g.Clip; g.SetClip(new Rectangle(x0, yIni, cw, hVis), CombineMode.Intersect); }
+                        for (int i = 0; i < a.Partes.Count; i++) ParteLinha(g, d, a, i, yIni + i * hParte, x0, cw, colIcone, xTexto, hParte);
                         if (g != null) Arvore(g, colIcone, yPai + hApp / 2 + E(15), yIni, a.Partes.Count, hParte);
-                        ya += E(4);
+                        if (clipP != null) { g.Clip = clipP; clipP.Dispose(); }
+                        if (g != null)   // indicador da direita aberto: uma linha so, do app ate a ultima janela (cresce junto)
+                        {
+                            g.SmoothingMode = SmoothingMode.AntiAlias;
+                            Fundo(g, new Rectangle(x0 + cw - E(8), yPai + E(10), Math.Max(2, E(3)), Math.Max(E(4), yIni + hVis - E(8) - (yPai + E(10)))),
+                                Sobre(Z_PARTES, d, a, null) ? cTexto : cFraco, E(1.5f));
+                            g.SmoothingMode = SmoothingMode.None;
+                        }
+                        if (fp < 1f) zonas.RemoveRange(nzP, zonas.Count - nzP);   // so da para clicar quando terminar de abrir
+                        ya += hVis;
                     }
                 }
                 if (f < 1f) zonas.RemoveRange(nz, zonas.Count - nz); // durante a animacao nao da para clicar
@@ -3252,10 +3282,15 @@ class Painel : Form
         var rSl = new Rectangle(xTexto - E(10), y + E(24), cw - (xTexto - x0) - E(44), E(26));
         Add(rSl, Z_SLIDER_A, d, a, null);
         bool multi = TemPartes(a);
-        var rSeta = new Rectangle(x0 + cw - E(40), y + E(2), E(32), E(24));   // mesma coluna da setinha das saidas
-        var rMais = multi ? new Rectangle(rSeta.Left - E(34), y + E(2), E(32), E(24)) : rSeta;
+        var rMais = new Rectangle(x0 + cw - E(40), y + E(2), E(32), E(24));
         if (movel) Add(rMais, Z_SAIDA_A, d, a, null);   // "..." = escolher a saida pela lista
-        if (multi) Add(rSeta, Z_PARTES, d, a, null);    // setinha: mostra cada janela do app
+        if (multi)   // varias janelas: clicar no NOME abre/fecha a lista (o icone continua sendo o mudo)
+        {
+            int nmMax = rMais.Left - xTexto - E(22) - (app.MostrarSom && a.Medidores.Count > 0 ? LarguraMed() + E(12) : 0);
+            int nmW = Math.Min(nmMax, TextRenderer.MeasureText(a.Nome, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width);
+            Add(new Rectangle(xTexto - E(4), y + E(2), nmW + E(8), E(26)), Z_PARTES, d, a, null);
+            Add(new Rectangle(x0 + cw - E(16), y + E(4), E(14), h - E(8)), Z_PARTES, d, a, null);   // indicador da direita
+        }
         if (g == null) return;
 
         bool linhaSobre = sobre != null && sobre.G == a && arrastoApp == null;
@@ -3273,6 +3308,17 @@ class Painel : Form
         if (Sobre(Z_MUDO_A, d, a, null)) Fundo(g, rIc, ControlPaint.Light(cHover, 0.1f), E(5));
         var rImg = new Rectangle(colIcone - ti / 2, rIc.Y + (rIc.Height - ti) / 2, ti, ti);
         Bitmap bmp = a.Caminho != null ? Processos.Icone(a.Caminho, ti) : a.Remoto ? IconeRemoto(a) : null;
+        // varias janelas: tracinhos na borda direita, um por janela (fechado). Aberto, viram uma linha so (desenhada no cartao)
+        if (multi && FracPartes(d, a) < 0.001f)
+        {
+            bool hov = Sobre(Z_PARTES, d, a, null);
+            int n = Math.Min(4, a.Partes.Count), sh = E(7), gap = E(3), tot = n * sh + (n - 1) * gap;
+            int yy = y + (h - tot) / 2, xx = x0 + cw - E(8);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            for (int i = 0; i < n; i++)
+                Fundo(g, new Rectangle(xx, yy + i * (sh + gap), Math.Max(2, E(3)), sh), hov ? cTexto : cFraco, E(1.5f));
+            g.SmoothingMode = SmoothingMode.None;
+        }
         if (bmp != null)
         {
             if (a.Mudo)
@@ -3300,18 +3346,13 @@ class Painel : Form
         int nomeMax = rMais.Left - xTexto - E(22) - (app.MostrarSom && a.Medidores.Count > 0 ? LarguraMed() + E(12) : 0);
         int nw = Math.Min(nomeMax, TextRenderer.MeasureText(g, a.Nome, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width);
         TextRenderer.DrawText(g, a.Nome, fNormal, new Rectangle(xTexto, y + E(3), nomeMax, E(24)), a.Ativo ? cTexto : cFraco, TF);
+        if (multi && Sobre(Z_PARTES, d, a, null))
+            using (var pn = new Pen(cFraco)) g.DrawLine(pn, xTexto, y + E(23), xTexto + nw, y + E(23));
         if (a.Saida != null)
             TextRenderer.DrawText(g, "", fGlifoP, new Rectangle(xTexto + nw + E(6), y + E(3), E(14), E(24)), cAcento, TC);
         if (app.MostrarSom && a.Medidores.Count > 0 && !arrastado)
             Medidor(g, xTexto + nw + (a.Saida != null ? E(26) : E(10)), y + E(3) + E(12), linhaSobre && movel ? cHover : cCartao,
                 "a|" + d.Id + "|" + a.Exe, null, a.Medidores);
-
-        if (multi)
-        {
-            bool ab = PartesAbertas(d, a);
-            if (Sobre(Z_PARTES, d, a, null)) Fundo(g, rSeta, ControlPaint.Light(cHover, 0.1f), E(4));
-            TextRenderer.DrawText(g, (ab ? '\uE70E' : '\uE70D').ToString(), fGlifoP, rSeta, cFraco, TC);
-        }
 
         // botao "..." discreto, so aparece com o mouse na linha
         if (movel && (linhaSobre || (app.MenuAberto && menuApp == a)))
@@ -3560,10 +3601,11 @@ class Painel : Form
         base.OnMouseMove(e);
         if (arrastando != null) { DefinirValor(arrastando, e.X); return; }
         if (arrastoApp != null) { AtualizarArrasto(e.Location); return; }
-        if (apertada != null && (apertada.Tipo == Z_NOME_A || apertada.Tipo == Z_PADRAO || (apertada.Tipo == Z_PERFIL && apertada.P != null) || (apertada.Tipo == Z_MUDO_A && apertada.G != null && !apertada.G.Sistema)) && e.Button == MouseButtons.Left &&
+        if (apertada != null && (apertada.Tipo == Z_NOME_A || (apertada.Tipo == Z_PARTES && !apertada.G.Sistema && Politica.Disponivel) || apertada.Tipo == Z_PADRAO || (apertada.Tipo == Z_PERFIL && apertada.P != null) || (apertada.Tipo == Z_MUDO_A && apertada.G != null && !apertada.G.Sistema)) && e.Button == MouseButtons.Left &&
             Math.Abs(e.X - arrastoInicio.X) + Math.Abs(e.Y - arrastoInicio.Y) > E(6))
         {
-            arrastoApp = apertada; apertada = null;
+            arrastoApp = apertada.Tipo == Z_PARTES ? new Zona { R = apertada.R, Tipo = Z_NOME_A, D = apertada.D, G = apertada.G } : apertada;
+            apertada = null;
             Capture = true;
             Cursor = Cursors.SizeAll;
             AtualizarArrasto(e.Location);
@@ -3815,7 +3857,13 @@ class Painel : Form
             case Z_PARTES:
                 {
                     string k = z.D.Id + "|" + z.G.Exe;
-                    if (!partesAbertas.Remove(k)) partesAbertas.Add(k);
+                    bool era = partesAbertas.Contains(k);
+                    if (era) partesAbertas.Remove(k); else partesAbertas.Add(k);
+                    if (app.Animacoes)
+                    {
+                        if (!partesAnim.ContainsKey(k)) partesAnim[k] = era ? 1f : 0f;
+                        Animar(); break;
+                    }
                     Montar(null); Posicionar(); AtualizarSobre(); Invalidate();
                 }
                 break;
