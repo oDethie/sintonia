@@ -2441,6 +2441,7 @@ class Painel : Form
 
     public void Mostrar()
     {
+        partesAbertas.Clear();   // as janelas de cada app sempre comecam recolhidas
         var pt = Cursor.Position;
         var tela = Screen.FromPoint(pt);
         area = App.AreaUtil(tela, out bordaBarra); telaB = tela.Bounds;
@@ -3221,7 +3222,9 @@ class Painel : Form
                     ya += hApp;
                     if (PartesAbertas(d, a))
                     {
+                        int yPai = ya - hApp, yIni = ya;
                         for (int i = 0; i < a.Partes.Count; i++) { ParteLinha(g, d, a, i, ya, x0, cw, colIcone, xTexto, hParte); ya += hParte; }
+                        if (g != null) Arvore(g, colIcone, yPai + hApp / 2 + E(15), yIni, a.Partes.Count, hParte);
                         ya += E(4);
                     }
                 }
@@ -3326,18 +3329,44 @@ class Painel : Form
     void ParteLinha(Graphics g, Disp d, GrupoApp a, int i, int y, int x0, int cw, int colIcone, int xTexto, int h)
     {
         var pt = a.Partes[i];
-        var rIc = new Rectangle(colIcone - E(15), y + E(14), E(30), E(30));
+        int ind = E(26);                       // recuo: as janelas ficam "penduradas" no app
+        int xIc = colIcone + ind, xt = xTexto + ind;
+        var rIc = new Rectangle(xIc - E(13), y + E(16), E(26), E(26));
         var zi = Add(rIc, Z_MUDO_P, d, a, null); zi.F = i;
-        var rSl = new Rectangle(xTexto - E(10), y + E(21), cw - (xTexto - x0) - E(44), E(24));
+        var rSl = new Rectangle(xt - E(10), y + E(21), cw - (xt - x0) - E(44), E(24));
         var zs = Add(rSl, Z_SLIDER_P, d, a, null); zs.F = i;
         if (g == null) return;
         if (SobreParte(Z_MUDO_P, a, i)) Fundo(g, rIc, ControlPaint.Light(cHover, 0.1f), E(5));
         TextRenderer.DrawText(g, (pt.Mudo ? '\uE74F' : '\uE767').ToString(), fGlifoP, rIc, cFraco, TC);
-        TextRenderer.DrawText(g, pt.Nome, fPequena, new Rectangle(xTexto, y + E(2), cw - (xTexto - x0) - E(16), E(20)),
+        TextRenderer.DrawText(g, pt.Nome, fPequena, new Rectangle(xt, y + E(2), cw - (xt - x0) - E(16), E(20)),
             pt.Mudo ? cFraco : cTexto, TF);
         Slider(g, rSl, pt.Vol, pt.Mudo, SobreParte(Z_SLIDER_P, a, i), false);
         TextRenderer.DrawText(g, ((int)Math.Round(pt.Vol * 100)).ToString(), fPequena,
             new Rectangle(rSl.Right, rSl.Y, E(40), rSl.Height), pt.Mudo ? cFraco : cTexto, TC);
+    }
+
+    // Linha que liga o icone do app as suas janelas (como uma arvore), com a ultima curva arredondada
+    void Arvore(Graphics g, int x, int yTopo, int yIni, int n, int hParte)
+    {
+        int ind = E(26);
+        float r = E(6);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var pn = new Pen(Color.FromArgb(150, cTrilho), Math.Max(1f, E(1.5f))))
+        {
+            int yUlt = yIni + (n - 1) * hParte + E(29);
+            g.DrawLine(pn, x, yTopo, x, yUlt - r);
+            for (int i = 0; i < n; i++)
+            {
+                int yc = yIni + i * hParte + E(29);
+                if (i < n - 1) g.DrawLine(pn, x, yc, x + ind - E(14), yc);
+                else
+                {
+                    g.DrawArc(pn, x, yc - 2 * r, 2 * r, 2 * r, 90, 90);
+                    g.DrawLine(pn, x + r, yc, x + ind - E(14), yc);
+                }
+            }
+        }
+        g.SmoothingMode = SmoothingMode.None;
     }
 
     void AplicarParte(GrupoApp a, int i, float v)
