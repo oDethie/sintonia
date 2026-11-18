@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.5.0.0")]
-[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyVersion("1.5.1.0")]
+[assembly: AssemblyFileVersion("1.5.1.0")]
 
 static class Program
 {
@@ -2073,7 +2073,7 @@ class Painel : Form
     List<Disp> saidas = new List<Disp>(), entradas = new List<Disp>();
     float esc = 1f;
     bool escuro;
-    Color cFundo, cCartao, cHover, cBorda, cTexto, cFraco, cAcento, cTextoAcento, cTrilho, cPolegar, cPolegarBorda;
+    Color cFundo, cCartao, cHover, cBorda, cTexto, cFraco, cAcento, cTextoAcento, cTrilho, cPolegar, cPolegarBorda, cAlto;
     Font fTitulo, fNormal, fNegrito, fPequena, fGlifo, fGlifoP;
     float escFontes = -1;
     int rolagem, alturaConteudo, largura;
@@ -2372,6 +2372,7 @@ class Painel : Form
         cTrilho = escuro ? Color.FromArgb(110, 110, 110) : Color.FromArgb(150, 150, 150);
         cPolegar = escuro ? Color.FromArgb(69, 69, 69) : Color.White;
         cPolegarBorda = escuro ? Color.FromArgb(90, 90, 90) : Color.FromArgb(210, 210, 210);
+        cAlto = escuro ? Color.FromArgb(255, 99, 99) : Color.FromArgb(196, 43, 28);   // vermelho de alerta do Windows 11
         if (escFontes != esc)
         {
             if (fTitulo != null) foreach (var f in new[] { fTitulo, fNormal, fNegrito, fPequena, fGlifo, fGlifoP }) f.Dispose();
@@ -3116,7 +3117,8 @@ class Painel : Form
             }
             int nomeW = Math.Max(E(20), direita - xTexto);
             bool comSom = app.MostrarSom && d.Medidor != null;
-            int nomeVis = Math.Max(E(20), nomeW - (comSom ? LarguraMed() + E(14) : 0));
+            bool altoCab = app.AlertaAtivo(d);
+            int nomeVis = Math.Max(E(20), nomeW - (comSom ? LarguraMed() + E(14) : 0) - (altoCab ? E(30) : 0));
             int nw = Math.Min(nomeVis, TextRenderer.MeasureText(g, d.Nome, fNegrito, Size.Empty, TextFormatFlags.NoPadding).Width);
             TextRenderer.DrawText(g, d.Nome, d.Padrao ? fNegrito : fNormal, new Rectangle(xTexto, r1.Y, nomeVis, r1.Height), cTexto, TF);
             int xm = xTexto + nw + E(10);
@@ -3125,6 +3127,11 @@ class Painel : Form
                 Medidor(g, xm, r1.Y + r1.Height / 2, hovCab ? cHover : cCartao, "d|" + d.Id, d.Medidor, null);
                 xm += LarguraMed() + E(4);
                 nw += LarguraMed() + E(14);
+            }
+            if (altoCab)   // alerta de volume alto: fica ai enquanto passar do limite
+            {
+                TextRenderer.DrawText(g, "\uE7BA", fGlifo, new Rectangle(xm + E(4), r1.Y, E(20), r1.Height), cAlto, TC);
+                nw += E(24);
             }
             if (app.MostrarAdaptador && !string.IsNullOrEmpty(d.Adaptador) && nomeW - nw > E(40))
                 TextRenderer.DrawText(g, d.Adaptador, fPequena, new Rectangle(xTexto + nw + E(8), r1.Y + E(1), nomeW - nw - E(8), r1.Height), cFraco, TF);
@@ -3146,9 +3153,10 @@ class Painel : Form
                     if (Sobre(Z_MUDO_D, d, null, null)) Fundo(g, rMudo, cHover, E(5));
                     TextRenderer.DrawText(g, Audio.GlifoVolume(d.Vol, d.Mudo, d.Fluxo).ToString(), fGlifo, rMudo,
                         d.Mudo ? cFraco : cTexto, TC);
-                    Slider(g, rSl, d.Vol, d.Mudo, Sobre(Z_SLIDER_D, d, null, null), true);
+                    bool alto = app.AlertaAtivo(d);
+                    Slider(g, rSl, d.Vol, d.Mudo, Sobre(Z_SLIDER_D, d, null, null), true, alto);
                     TextRenderer.DrawText(g, ((int)Math.Round(d.Vol * 100)).ToString(), fNegrito,
-                        new Rectangle(rSl.Right, y2, E(40), hLinha2), d.Mudo ? cFraco : cTexto, TC);
+                        new Rectangle(rSl.Right, y2, E(40), hLinha2), d.Mudo ? cFraco : alto ? cAlto : cTexto, TC);
                 }
 
                 // Apps desta saida
@@ -3255,21 +3263,41 @@ class Painel : Form
         return "Outra saída";
     }
 
-    void Slider(Graphics g, Rectangle r, float v, bool mudo, bool ativo, bool grosso)
+    void Slider(Graphics g, Rectangle r, float v, bool mudo, bool ativo, bool grosso, bool alto = false)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         float raio = E(10), x0 = r.Left + raio, x1 = r.Right - raio, cy = r.Top + r.Height / 2f,
               th = grosso ? Math.Max(3, E(5)) : Math.Max(2, E(4));
         float xv = x0 + (x1 - x0) * Math.Max(0, Math.Min(1, v));
+        alto = alto && !mudo;
+        float xl = x0 + (x1 - x0) * App.LimiteAlto;   // onde comeca a zona de volume alto
         using (var b = new SolidBrush(cTrilho))
         using (var p = Desenho.Arred(new RectangleF(x0, cy - th / 2, x1 - x0, th), th / 2)) g.FillPath(b, p);
+        if (alto)   // o resto da barra (do volume ate o fim) fica vermelho clarinho
+        {
+            var clip = g.Clip;
+            g.SetClip(new RectangleF(xl, cy - th, x1 - xl + th, th * 2), CombineMode.Intersect);
+            using (var b = new SolidBrush(Color.FromArgb(110, cAlto)))
+            using (var p = Desenho.Arred(new RectangleF(x0, cy - th / 2, x1 - x0, th), th / 2)) g.FillPath(b, p);
+            g.Clip = clip;
+        }
         if (xv - x0 >= 1)
+        {
             using (var b = new SolidBrush(mudo ? cFraco : cAcento))
             using (var p = Desenho.Arred(new RectangleF(x0, cy - th / 2, xv - x0, th), th / 2)) g.FillPath(b, p);
+            if (alto)   // ate 70% a cor normal; o que passa disso, vermelho
+            {
+                var clip = g.Clip;
+                g.SetClip(new RectangleF(xl, cy - th, xv - xl + th, th * 2), CombineMode.Intersect);
+                using (var b = new SolidBrush(cAlto))
+                using (var p = Desenho.Arred(new RectangleF(x0, cy - th / 2, xv - x0, th), th / 2)) g.FillPath(b, p);
+                g.Clip = clip;
+            }
+        }
         using (var b = new SolidBrush(cPolegar)) g.FillEllipse(b, xv - raio, cy - raio, raio * 2, raio * 2);
         using (var p = new Pen(cPolegarBorda)) g.DrawEllipse(p, xv - raio, cy - raio, raio * 2, raio * 2);
         float ri = ativo ? E(7) : E(5);
-        using (var b = new SolidBrush(mudo ? cFraco : cAcento)) g.FillEllipse(b, xv - ri, cy - ri, ri * 2, ri * 2);
+        using (var b = new SolidBrush(mudo ? cFraco : alto ? cAlto : cAcento)) g.FillEllipse(b, xv - ri, cy - ri, ri * 2, ri * 2);
         g.SmoothingMode = SmoothingMode.None;
     }
 
@@ -3833,6 +3861,13 @@ class Painel : Form
         var rec = new ToolStripMenuItem(app.Aberto(d) ? "Recolher" : "Expandir");
         rec.Click += (s, e) => Clique(new Zona { Tipo = Z_RECOLHER, D = d, R = z.R });
         menu.Items.Add(rec);
+        if (d.Fluxo == 0)
+        {
+            bool liga = app.Alerta(d);
+            var al = new ToolStripMenuItem("Alertar volume alto (acima de " + (int)Math.Round(App.LimiteAlto * 100) + "%)") { Checked = liga };
+            al.Click += (s, e) => { app.AlertaVolume[id] = !liga; app.SalvarConfig(); Invalidate(); };
+            menu.Items.Add(al);
+        }
         menu.Items.Add(new ToolStripSeparator());
 
         var ren = new ToolStripMenuItem("Renomear…");
@@ -4776,6 +4811,18 @@ class App : ApplicationContext
     public readonly Dictionary<string, string> Regras = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     public readonly Dictionary<string, string> Nomes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     public readonly HashSet<string> Ocultos = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    // volume alto: acima disso a barra fica vermelha e aparece um alerta (protege os ouvidos)
+    public const float LimiteAlto = 0.70f;
+    public readonly Dictionary<string, bool> AlertaVolume = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);   // escolha por saida
+    // vem ligado nos fones e headsets; nas outras saidas so se a pessoa ligar
+    public bool Alerta(Disp d)
+    {
+        if (d == null || d.Fluxo != 0) return false;
+        bool v;
+        if (AlertaVolume.TryGetValue(d.Id, out v)) return v;
+        return d.Forma == 3 /*fones*/ || d.Forma == 5 /*headset*/;
+    }
+    public bool AlertaAtivo(Disp d) { return !d.Mudo && d.Vol > LimiteAlto + 0.004f && Alerta(d); }
     public readonly List<Perfil> Perfis = new List<Perfil>();
     public string PerfilAtivo;
     readonly string arqConfig = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Sintonia.ini");
@@ -6227,6 +6274,7 @@ class App : ApplicationContext
                     case "regra": { var a = v.Split('>'); if (a.Length == 2) Regras[a[0]] = a[1]; } break;
                     case "nome": { var a = v.Split('>'); if (a.Length == 2) Nomes[a[0]] = a[1]; } break;
                     case "oculto": Ocultos.Add(v); break;
+                    case "alerta": { var a = v.Split('>'); if (a.Length == 2) AlertaVolume[a[0]] = a[1] == "1"; } break;
                     case "perfil": { var pf = LerPerfil(v); if (pf != null) Perfis.Add(pf); } break;
                     default:
                         if (k.StartsWith("atalho") && k.Length == 7)
@@ -6323,6 +6371,7 @@ class App : ApplicationContext
             foreach (var kv in Regras) l.Add("regra=" + kv.Key + ">" + kv.Value);
             foreach (var kv in Nomes) l.Add("nome=" + kv.Key + ">" + kv.Value);
             foreach (var o in Ocultos) l.Add("oculto=" + o);
+            foreach (var kv in AlertaVolume) l.Add("alerta=" + kv.Key + ">" + (kv.Value ? 1 : 0));
             foreach (var kv in Abertos) l.Add("aberto=" + kv.Key + ">" + (kv.Value ? 1 : 0));
             foreach (var p in Perfis)
             {
