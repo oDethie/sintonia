@@ -3269,6 +3269,7 @@ class Painel : Form
         var rLinha = new Rectangle(x0 + E(4), y, cw - E(8), h);
         // A linha inteira pode ser arrastada para outra saida (fica por baixo das outras zonas)
         if (movel) Add(rLinha, Z_NOME_A, d, a, null);
+        else if (TemPartes(a)) Add(rLinha, Z_PARTES, d, a, null);   // fundo da linha para o clique duplo
         int ti = E(24);
         var rIc = new Rectangle(colIcone - E(17), y + (h - E(34)) / 2, E(34), E(34));
         Add(rIc, Z_MUDO_A, d, a, null);           // clique = mudo; arrastar = mover
@@ -3277,9 +3278,7 @@ class Painel : Form
         bool multi = TemPartes(a);
         var rMais = new Rectangle(x0 + cw - E(40), y + E(2), E(32), E(24));
         if (movel) Add(rMais, Z_SAIDA_A, d, a, null);   // "..." = escolher a saida pela lista
-        // varias janelas: clicar em qualquer ponto da linha do nome (do nome ate o "...") abre/fecha a lista.
-        // O icone continua sendo o mudo e a barra continua sendo o volume.
-        if (multi) Add(new Rectangle(xTexto - E(4), y + E(1), rMais.Left - E(4) - (xTexto - E(4)), E(23)), Z_PARTES, d, a, null);
+        // varias janelas: clique DUPLO na linha (fora da barra, do icone e do "...") abre/fecha a lista (OnMouseDoubleClick)
         if (g == null) return;
 
         bool linhaSobre = sobre != null && sobre.G == a && arrastoApp == null;
@@ -3335,8 +3334,6 @@ class Painel : Form
         int nomeMax = rMais.Left - xTexto - E(22) - (app.MostrarSom && a.Medidores.Count > 0 ? LarguraMed() + E(12) : 0);
         int nw = Math.Min(nomeMax, TextRenderer.MeasureText(g, a.Nome, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width);
         TextRenderer.DrawText(g, a.Nome, fNormal, new Rectangle(xTexto, y + E(3), nomeMax, E(24)), a.Ativo ? cTexto : cFraco, TF);
-        if (multi && Sobre(Z_PARTES, d, a, null))
-            using (var pn = new Pen(cFraco)) g.DrawLine(pn, xTexto, y + E(23), xTexto + nw, y + E(23));
         if (a.Saida != null)
             TextRenderer.DrawText(g, "", fGlifoP, new Rectangle(xTexto + nw + E(6), y + E(3), E(14), E(24)), cAcento, TC);
         if (app.MostrarSom && a.Medidores.Count > 0 && !arrastado)
@@ -3684,6 +3681,29 @@ class Painel : Form
         TextRenderer.DrawText(g, txt, fNormal, new Rectangle(r.X + E(36), r.Y, r.Width - E(44), r.Height), cTexto, TF);
     }
 
+    // Clique duplo na linha de um app com varias janelas (fora da barra, do icone e do "..."): abre/fecha as janelas
+    protected override void OnMouseDoubleClick(MouseEventArgs e)
+    {
+        base.OnMouseDoubleClick(e);
+        if (e.Button != MouseButtons.Left || arrastoApp != null) return;
+        var z = ZonaEm(e.Location);
+        if (z == null || z.G == null || z.D == null || !TemPartes(z.G) || (z.Tipo != Z_NOME_A && z.Tipo != Z_PARTES)) return;
+        AlternarPartes(z.D, z.G);
+    }
+
+    void AlternarPartes(Disp d, GrupoApp a)
+    {
+        string k = d.Id + "|" + a.Exe;
+        bool era = partesAbertas.Contains(k);
+        if (era) partesAbertas.Remove(k); else partesAbertas.Add(k);
+        if (app.Animacoes)
+        {
+            if (!partesAnim.ContainsKey(k)) partesAnim[k] = era ? 1f : 0f;
+            Animar(); return;
+        }
+        Montar(null); Posicionar(); AtualizarSobre(); Invalidate();
+    }
+
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         base.OnMouseWheel(e);
@@ -3844,18 +3864,7 @@ class Painel : Form
                 }
                 break;
             case Z_PARTES:
-                {
-                    string k = z.D.Id + "|" + z.G.Exe;
-                    bool era = partesAbertas.Contains(k);
-                    if (era) partesAbertas.Remove(k); else partesAbertas.Add(k);
-                    if (app.Animacoes)
-                    {
-                        if (!partesAnim.ContainsKey(k)) partesAnim[k] = era ? 1f : 0f;
-                        Animar(); break;
-                    }
-                    Montar(null); Posicionar(); AtualizarSobre(); Invalidate();
-                }
-                break;
+                break;   // clique simples no fundo da linha nao faz nada; o clique duplo abre/fecha (OnMouseDoubleClick)
             case Z_MUDO_P:
                 if (z.F >= 0 && z.F < z.G.Partes.Count)
                 {
