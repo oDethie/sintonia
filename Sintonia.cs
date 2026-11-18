@@ -3247,13 +3247,6 @@ class Painel : Form
                         for (int i = 0; i < a.Partes.Count; i++) ParteLinha(g, d, a, i, yIni + i * hParte, x0, cw, colIcone, xTexto, hParte);
                         if (g != null) Arvore(g, colIcone, yPai + hApp / 2 + E(15), yIni, a.Partes.Count, hParte);
                         if (clipP != null) { g.Clip = clipP; clipP.Dispose(); }
-                        if (g != null)   // indicador da direita aberto: uma linha so, do app ate a ultima janela (cresce junto)
-                        {
-                            g.SmoothingMode = SmoothingMode.AntiAlias;
-                            Fundo(g, new Rectangle(x0 + cw - E(8), yPai + E(10), Math.Max(2, E(3)), Math.Max(E(4), yIni + hVis - E(8) - (yPai + E(10)))),
-                                Sobre(Z_PARTES, d, a, null) ? cTexto : cFraco, E(1.5f));
-                            g.SmoothingMode = SmoothingMode.None;
-                        }
                         if (fp < 1f) zonas.RemoveRange(nzP, zonas.Count - nzP);   // so da para clicar quando terminar de abrir
                         ya += hVis;
                     }
@@ -3284,13 +3277,9 @@ class Painel : Form
         bool multi = TemPartes(a);
         var rMais = new Rectangle(x0 + cw - E(40), y + E(2), E(32), E(24));
         if (movel) Add(rMais, Z_SAIDA_A, d, a, null);   // "..." = escolher a saida pela lista
-        if (multi)   // varias janelas: clicar no NOME abre/fecha a lista (o icone continua sendo o mudo)
-        {
-            int nmMax = rMais.Left - xTexto - E(22) - (app.MostrarSom && a.Medidores.Count > 0 ? LarguraMed() + E(12) : 0);
-            int nmW = Math.Min(nmMax, TextRenderer.MeasureText(a.Nome, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width);
-            Add(new Rectangle(xTexto - E(4), y + E(2), nmW + E(8), E(26)), Z_PARTES, d, a, null);
-            Add(new Rectangle(x0 + cw - E(16), y + E(4), E(14), h - E(8)), Z_PARTES, d, a, null);   // indicador da direita
-        }
+        // varias janelas: clicar em qualquer ponto da linha do nome (do nome ate o "...") abre/fecha a lista.
+        // O icone continua sendo o mudo e a barra continua sendo o volume.
+        if (multi) Add(new Rectangle(xTexto - E(4), y + E(1), rMais.Left - E(4) - (xTexto - E(4)), E(23)), Z_PARTES, d, a, null);
         if (g == null) return;
 
         bool linhaSobre = sobre != null && sobre.G == a && arrastoApp == null;
@@ -3308,16 +3297,16 @@ class Painel : Form
         if (Sobre(Z_MUDO_A, d, a, null)) Fundo(g, rIc, ControlPaint.Light(cHover, 0.1f), E(5));
         var rImg = new Rectangle(colIcone - ti / 2, rIc.Y + (rIc.Height - ti) / 2, ti, ti);
         Bitmap bmp = a.Caminho != null ? Processos.Icone(a.Caminho, ti) : a.Remoto ? IconeRemoto(a) : null;
-        // varias janelas: tracinhos na borda direita, um por janela (fechado). Aberto, viram uma linha so (desenhada no cartao)
-        if (multi && FracPartes(d, a) < 0.001f)
+        if (multi)   // varias janelas: uma copia apagadinha atras do icone, como cartas empilhadas
         {
-            bool hov = Sobre(Z_PARTES, d, a, null);
-            int n = Math.Min(4, a.Partes.Count), sh = E(7), gap = E(3), tot = n * sh + (n - 1) * gap;
-            int yy = y + (h - tot) / 2, xx = x0 + cw - E(8);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            for (int i = 0; i < n; i++)
-                Fundo(g, new Rectangle(xx, yy + i * (sh + gap), Math.Max(2, E(3)), sh), hov ? cTexto : cFraco, E(1.5f));
-            g.SmoothingMode = SmoothingMode.None;
+            var rTras = new Rectangle(rImg.X + E(7), rImg.Y - E(6), rImg.Width, rImg.Height);
+            if (bmp != null)
+                using (var ia = new System.Drawing.Imaging.ImageAttributes())
+                {
+                    ia.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = a.Mudo ? 0.18f : 0.42f });
+                    g.DrawImage(bmp, rTras, 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, ia);
+                }
+            else TextRenderer.DrawText(g, "", fGlifo, rTras, Color.FromArgb(90, cTexto), TC);
         }
         if (bmp != null)
         {
