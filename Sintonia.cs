@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.5.2.0")]
-[assembly: AssemblyFileVersion("1.5.2.0")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
 
 static class Program
 {
@@ -579,6 +579,16 @@ class GrupoApp
     public List<object> Rcws = new List<object>();
     public List<IAudioMeterInformation> Medidores = new List<IAudioMeterInformation>();
     public bool Remoto;          // app do outro PC (controle pela rede)
+    public List<ParteApp> Partes = new List<ParteApp>();   // cada janela/processo do app com som (2 VLC abertos, etc.)
+}
+
+class ParteApp
+{
+    public uint Pid;
+    public string Nome;
+    public float Vol;
+    public bool Mudo = true, Ativo;
+    public List<ISimpleAudioVolume> Vols = new List<ISimpleAudioVolume>();
 }
 
 class Perfil
@@ -755,6 +765,20 @@ static class Audio
                     if (vol != null && vol.GetMasterVolume(out v) == 0) g.Vol = v;
                 }
                 if (vol != null) { g.Vols.Add(vol); if (vol.GetMute(out m) == 0) g.Mudo = g.Mudo && m; }
+                if (!sis && vol != null)
+                {
+                    var pt = g.Partes.Find(q => q.Pid == pid);
+                    if (pt == null)
+                    {
+                        pt = new ParteApp { Pid = pid };
+                        float pv; if (vol.GetMasterVolume(out pv) == 0) pt.Vol = pv;
+                        string dn; if (s.GetDisplayName(out dn) == 0 && !string.IsNullOrEmpty(dn) && !dn.StartsWith("@")) pt.Nome = dn;
+                        g.Partes.Add(pt);
+                    }
+                    pt.Vols.Add(vol);
+                    bool pm; if (vol.GetMute(out pm) == 0) pt.Mudo = pt.Mudo && pm;
+                    if (st == 1) pt.Ativo = true;
+                }
                 if (ComMedidor) { var med = s as IAudioMeterInformation; if (med != null) g.Medidores.Add(med); }
                 if (st == 1) g.Ativo = true;
                 if (pid != 0 && !g.Pids.Contains(pid)) g.Pids.Add(pid);
@@ -767,6 +791,7 @@ static class Audio
         {
             if (g.Vols.Count == 0) g.Mudo = false;
             if (!g.Sistema && g.Pids.Count > 0) g.Saida = Politica.Obter(g.Pids[0]);
+            if (g.Partes.Count > 1) NomearPartes(g);
         }
         // Cada app aparece so na saida onde ele toca: a que foi escolhida para ele, ou a
         // padrao se nao tiver escolha (ou onde ele estiver tocando agora mesmo)
@@ -787,6 +812,21 @@ static class Audio
         });
     }
 
+    // Nome de cada janela: o titulo da janela do processo; senao o nome da sessao; senao "App 1", "App 2"
+    static void NomearPartes(GrupoApp g)
+    {
+        g.Partes.Sort((a, b) => a.Pid.CompareTo(b.Pid));
+        for (int i = 0; i < g.Partes.Count; i++)
+        {
+            var pt = g.Partes[i];
+            string titulo = null;
+            try { using (var pr = Process.GetProcessById((int)pt.Pid)) titulo = pr.MainWindowTitle; } catch { }
+            if (!string.IsNullOrEmpty(titulo)) pt.Nome = titulo;
+            if (string.IsNullOrEmpty(pt.Nome)) pt.Nome = g.Nome + " " + (i + 1);
+            if (pt.Vols.Count == 0) pt.Mudo = false;
+        }
+    }
+
     public static void Liberar(List<Disp> l)
     {
         if (l == null) return;
@@ -794,7 +834,7 @@ static class Audio
         {
             Soltar(d.Ep); d.Ep = null;
             Soltar(d.Medidor); d.Medidor = null;
-            foreach (var g in d.Apps) { foreach (var r in g.Rcws) Soltar(r); g.Rcws.Clear(); g.Vols.Clear(); g.Medidores.Clear(); }
+            foreach (var g in d.Apps) { foreach (var r in g.Rcws) Soltar(r); g.Rcws.Clear(); g.Vols.Clear(); g.Medidores.Clear(); foreach (var pt in g.Partes) pt.Vols.Clear(); }
         }
         l.Clear();
     }
@@ -2101,7 +2141,12 @@ class Painel : Form
     readonly List<KeyValuePair<Rectangle, Perfil>> chips = new List<KeyValuePair<Rectangle, Perfil>>();
 
     class Zona { public Rectangle R; public int Tipo; public Disp D; public GrupoApp G; public Perfil P; public int F; public string Id; }
-    const int Z_RECOLHER = 10, Z_NOME_A = 11, Z_ESCONDIDOS = 12, Z_MOSTRAR = 13, Z_USAR = 14, Z_PC = 15, Z_TENTAR = 16, Z_LISTA_PERFIS = 17;
+    const int Z_RECOLHER = 10, Z_NOME_A = 11, Z_ESCONDIDOS = 12, Z_MOSTRAR = 13, Z_USAR = 14, Z_PC = 15, Z_TENTAR = 16, Z_LISTA_PERFIS = 17,
+              Z_PARTES = 18, Z_SLIDER_P = 19, Z_MUDO_P = 20;   // janelas de um app: setinha, barra e mudo de cada uma
+    // apps com as janelas abertas no painel (saida|exe); nao e guardado: o painel abre sempre fechado
+    readonly HashSet<string> partesAbertas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    static bool TemPartes(GrupoApp a) { return a != null && !a.Sistema && !a.Remoto && a.Partes.Count > 1; }
+    bool PartesAbertas(Disp d, GrupoApp a) { return TemPartes(a) && partesAbertas.Contains(d.Id + "|" + a.Exe); }
     bool listaPerfis; float listaAb;     // lista suspensa dos perfis (abre dentro do painel)
 
     // troca de PC: destaque que desliza, conteudo que entra de lado e altura que acompanha
@@ -2663,12 +2708,13 @@ class Painel : Form
         {
             // com o mouse em cima de uma barra: setas mudam de 1 em 1
             var zb = ZonaEm(PointToClient(Cursor.Position));
-            if (zb != null && (zb.Tipo == Z_SLIDER_D || zb.Tipo == Z_SLIDER_A))
+            if (zb != null && (zb.Tipo == Z_SLIDER_D || zb.Tipo == Z_SLIDER_A || (zb.Tipo == Z_SLIDER_P && zb.F >= 0 && zb.F < zb.G.Partes.Count)))
             {
                 int dir = k == Keys.Right ? 1 : -1;
-                float atual = zb.G != null ? zb.G.Vol : zb.D.Vol;
+                float atual = zb.Tipo == Z_SLIDER_P ? zb.G.Partes[zb.F].Vol : zb.G != null ? zb.G.Vol : zb.D.Vol;
                 float novo = Math.Max(0, Math.Min(100, (int)Math.Round(atual * 100) + dir)) / 100f;
-                if (zb.G != null) AplicarApp(zb.G, novo); else AplicarDisp(zb.D, novo);
+                if (zb.Tipo == Z_SLIDER_P) AplicarParte(zb.G, zb.F, novo);
+                else if (zb.G != null) AplicarApp(zb.G, novo); else AplicarDisp(zb.D, novo);
                 Invalidate();
                 return true;
             }
@@ -2701,6 +2747,11 @@ class Painel : Form
     bool Igual(Zona a, Zona b)
     {
         return a != null && b != null && a.Tipo == b.Tipo && a.D == b.D && a.G == b.G && a.P == b.P && a.F == b.F && a.Id == b.Id;
+    }
+    bool SobreParte(int tipo, GrupoApp g, int i)
+    {
+        var s = arrastando ?? sobre;
+        return s != null && s.Tipo == tipo && s.G == g && s.F == i;
     }
     bool Sobre(int tipo, Disp d, GrupoApp g, Perfil p)
     {
@@ -3041,11 +3092,13 @@ class Painel : Form
     int Cartao(Graphics g, Disp d, int y, int pad, int W)
     {
         int x0 = pad, cw = W - pad * 2;
-        int hLinha1 = E(40), hLinha2 = E(36), hApp = E(50);
+        int hLinha1 = E(40), hLinha2 = E(36), hApp = E(50), hParte = E(46);
         bool aberto = app.Aberto(d);
         float f = Abertura(d);
         int hFechado = hLinha1 + E(4);
-        int hAberto = hLinha1 + hLinha2 + E(4) + d.Apps.Count * hApp + (d.Apps.Count > 0 ? E(6) : 0);
+        int hPartes = 0;
+        foreach (var a in d.Apps) if (PartesAbertas(d, a)) hPartes += a.Partes.Count * hParte + E(4);
+        int hAberto = hLinha1 + hLinha2 + E(4) + d.Apps.Count * hApp + hPartes + (d.Apps.Count > 0 ? E(6) : 0);
         int h = hFechado + (int)Math.Round((hAberto - hFechado) * f);
         var rc = new Rectangle(x0, y, cw, h);
         cartoes.Add(new KeyValuePair<Rectangle, Disp>(rc, d));
@@ -3166,6 +3219,11 @@ class Painel : Form
                 {
                     AppLinha(g, d, a, ya, x0, cw, colIcone, xTexto, hApp);
                     ya += hApp;
+                    if (PartesAbertas(d, a))
+                    {
+                        for (int i = 0; i < a.Partes.Count; i++) { ParteLinha(g, d, a, i, ya, x0, cw, colIcone, xTexto, hParte); ya += hParte; }
+                        ya += E(4);
+                    }
                 }
                 if (f < 1f) zonas.RemoveRange(nz, zonas.Count - nz); // durante a animacao nao da para clicar
             }
@@ -3190,8 +3248,11 @@ class Painel : Form
         Add(rIc, Z_MUDO_A, d, a, null);           // clique = mudo; arrastar = mover
         var rSl = new Rectangle(xTexto - E(10), y + E(24), cw - (xTexto - x0) - E(44), E(26));
         Add(rSl, Z_SLIDER_A, d, a, null);
-        var rMais = new Rectangle(x0 + cw - E(40), y + E(2), E(32), E(24));
+        bool multi = TemPartes(a);
+        var rSeta = new Rectangle(x0 + cw - E(40), y + E(2), E(32), E(24));   // mesma coluna da setinha das saidas
+        var rMais = multi ? new Rectangle(rSeta.Left - E(34), y + E(2), E(32), E(24)) : rSeta;
         if (movel) Add(rMais, Z_SAIDA_A, d, a, null);   // "..." = escolher a saida pela lista
+        if (multi) Add(rSeta, Z_PARTES, d, a, null);    // setinha: mostra cada janela do app
         if (g == null) return;
 
         bool linhaSobre = sobre != null && sobre.G == a && arrastoApp == null;
@@ -3242,6 +3303,13 @@ class Painel : Form
             Medidor(g, xTexto + nw + (a.Saida != null ? E(26) : E(10)), y + E(3) + E(12), linhaSobre && movel ? cHover : cCartao,
                 "a|" + d.Id + "|" + a.Exe, null, a.Medidores);
 
+        if (multi)
+        {
+            bool ab = PartesAbertas(d, a);
+            if (Sobre(Z_PARTES, d, a, null)) Fundo(g, rSeta, ControlPaint.Light(cHover, 0.1f), E(4));
+            TextRenderer.DrawText(g, (ab ? '\uE70E' : '\uE70D').ToString(), fGlifoP, rSeta, cFraco, TC);
+        }
+
         // botao "..." discreto, so aparece com o mouse na linha
         if (movel && (linhaSobre || (app.MenuAberto && menuApp == a)))
         {
@@ -3252,6 +3320,34 @@ class Painel : Form
         Slider(g, rSl, a.Vol, a.Mudo, Sobre(Z_SLIDER_A, d, a, null), false);
         TextRenderer.DrawText(g, ((int)Math.Round(a.Vol * 100)).ToString(), fPequena,
             new Rectangle(rSl.Right, rSl.Y, E(40), rSl.Height), a.Mudo ? cFraco : cTexto, TC);
+    }
+
+    // Uma janela do app (aberta pela setinha): icone de mudo, nome da janela, barra e numero, no mesmo alinhamento dos apps
+    void ParteLinha(Graphics g, Disp d, GrupoApp a, int i, int y, int x0, int cw, int colIcone, int xTexto, int h)
+    {
+        var pt = a.Partes[i];
+        var rIc = new Rectangle(colIcone - E(15), y + E(14), E(30), E(30));
+        var zi = Add(rIc, Z_MUDO_P, d, a, null); zi.F = i;
+        var rSl = new Rectangle(xTexto - E(10), y + E(21), cw - (xTexto - x0) - E(44), E(24));
+        var zs = Add(rSl, Z_SLIDER_P, d, a, null); zs.F = i;
+        if (g == null) return;
+        if (SobreParte(Z_MUDO_P, a, i)) Fundo(g, rIc, ControlPaint.Light(cHover, 0.1f), E(5));
+        TextRenderer.DrawText(g, (pt.Mudo ? '\uE74F' : '\uE767').ToString(), fGlifoP, rIc, cFraco, TC);
+        TextRenderer.DrawText(g, pt.Nome, fPequena, new Rectangle(xTexto, y + E(2), cw - (xTexto - x0) - E(16), E(20)),
+            pt.Mudo ? cFraco : cTexto, TF);
+        Slider(g, rSl, pt.Vol, pt.Mudo, SobreParte(Z_SLIDER_P, a, i), false);
+        TextRenderer.DrawText(g, ((int)Math.Round(pt.Vol * 100)).ToString(), fPequena,
+            new Rectangle(rSl.Right, rSl.Y, E(40), rSl.Height), pt.Mudo ? cFraco : cTexto, TC);
+    }
+
+    void AplicarParte(GrupoApp a, int i, float v)
+    {
+        if (a == null || i < 0 || i >= a.Partes.Count) return;
+        var pt = a.Partes[i];
+        v = Math.Max(0f, Math.Min(1f, v));
+        foreach (var s in pt.Vols) try { s.SetMasterVolume(v, ref Audio.Ctx); if (pt.Mudo && v > 0) s.SetMute(false, ref Audio.Ctx); } catch { }
+        pt.Vol = v;
+        if (v > 0) pt.Mudo = false;
     }
 
     string NomeSaida(string id)
@@ -3459,7 +3555,7 @@ class Painel : Form
         if (e.Button != MouseButtons.Left) return;
         var z = ZonaEm(e.Location);
         if (z == null) return;
-        if (z.Tipo == Z_SLIDER_D || z.Tipo == Z_SLIDER_A) { arrastando = z; Capture = true; DefinirValor(z, e.X); return; }
+        if (z.Tipo == Z_SLIDER_D || z.Tipo == Z_SLIDER_A || z.Tipo == Z_SLIDER_P) { arrastando = z; Capture = true; DefinirValor(z, e.X); return; }
         apertada = z;
         arrastoInicio = e.Location;
     }
@@ -3533,10 +3629,11 @@ class Painel : Form
         base.OnMouseWheel(e);
         var z = ZonaEm(e.Location);
         // A roda so rola a lista; mudar volume pela roda no painel e opcional (desligado por padrao)
-        if (app.RodaPainel && z != null && (z.Tipo == Z_SLIDER_D || z.Tipo == Z_SLIDER_A))
+        if (app.RodaPainel && z != null && (z.Tipo == Z_SLIDER_D || z.Tipo == Z_SLIDER_A || z.Tipo == Z_SLIDER_P))
         {
             float passo = app.Passo / 100f * (e.Delta / 120f);
-            if (z.G != null) AplicarApp(z.G, z.G.Vol + passo);
+            if (z.Tipo == Z_SLIDER_P) { if (z.F >= 0 && z.F < z.G.Partes.Count) AplicarParte(z.G, z.F, z.G.Partes[z.F].Vol + passo); }
+            else if (z.G != null) AplicarApp(z.G, z.G.Vol + passo);
             else AplicarDisp(z.D, z.D.Vol + passo);
             Invalidate();
             return;
@@ -3553,7 +3650,8 @@ class Painel : Form
     {
         float raio = E(10);
         float v = (mx - z.R.Left - raio) / (z.R.Width - raio * 2);
-        if (z.G != null) AplicarApp(z.G, v); else AplicarDisp(z.D, v);
+        if (z.Tipo == Z_SLIDER_P) AplicarParte(z.G, z.F, v);
+        else if (z.G != null) AplicarApp(z.G, v); else AplicarDisp(z.D, v);
         Invalidate();
     }
 
@@ -3683,6 +3781,23 @@ class Painel : Form
                 {
                     if (app.Animacoes) Animar();
                     else { vista[z.F] = 0f; Montar(null); Posicionar(); Invalidate(); }
+                }
+                break;
+            case Z_PARTES:
+                {
+                    string k = z.D.Id + "|" + z.G.Exe;
+                    if (!partesAbertas.Remove(k)) partesAbertas.Add(k);
+                    Montar(null); Posicionar(); AtualizarSobre(); Invalidate();
+                }
+                break;
+            case Z_MUDO_P:
+                if (z.F >= 0 && z.F < z.G.Partes.Count)
+                {
+                    var pt = z.G.Partes[z.F];
+                    bool pm = !pt.Mudo;
+                    foreach (var s in pt.Vols) try { s.SetMute(pm, ref Audio.Ctx); } catch { }
+                    pt.Mudo = pm;
+                    Invalidate();
                 }
                 break;
             case Z_RECOLHER:
@@ -5216,8 +5331,8 @@ class App : ApplicationContext
         tSalvarVol.Stop(); tSalvarVol.Start();   // grava uma vez so, quando parar de arrastar
     }
 
-    // Devolve o volume lembrado aos apps que estao tocando (soExe: so esse app)
-    void RestaurarVolumes(string soExe)
+    // Devolve o volume lembrado aos apps que estao tocando (soExe: so esse app; soPid: so essa janela)
+    void RestaurarVolumes(string soExe, uint soPid = 0)
     {
         if (!Lembrar || VolApps.Count == 0) return;
         var ds = Audio.Listar(0, true, true, null, false);
@@ -5226,8 +5341,12 @@ class App : ApplicationContext
             {
                 float v;
                 if (g.Sistema || g.Remoto || (soExe != null && !string.Equals(g.Exe, soExe, StringComparison.OrdinalIgnoreCase))) continue;
-                if (!VolApps.TryGetValue(g.Exe, out v) || Math.Abs(g.Vol - v) < 0.005f) continue;
-                foreach (var sv in g.Vols) try { sv.SetMasterVolume(v, ref Audio.Ctx); } catch { }
+                if (!VolApps.TryGetValue(g.Exe, out v)) continue;
+                foreach (var pt in g.Partes)
+                {
+                    if ((soPid != 0 && pt.Pid != soPid) || Math.Abs(pt.Vol - v) < 0.005f) continue;
+                    foreach (var sv in pt.Vols) try { sv.SetMasterVolume(v, ref Audio.Ctx); } catch { }
+                }
             }
         Audio.Liberar(ds);
     }
@@ -5244,10 +5363,10 @@ class App : ApplicationContext
 
         if (Lembrar && VolApps.ContainsKey(exe))
         {
-            RestaurarVolumes(exe);
-            string so = exe;   // o app pode abrir mais de uma sessao logo depois: confere de novo
+            RestaurarVolumes(exe, pid);
+            string so = exe; uint sp = pid;   // o app pode abrir mais de uma sessao logo depois: confere de novo
             var tv = new Timer { Interval = 1200 };
-            tv.Tick += (s, e) => { tv.Stop(); tv.Dispose(); RestaurarVolumes(so); };
+            tv.Tick += (s, e) => { tv.Stop(); tv.Dispose(); RestaurarVolumes(so, sp); };
             tv.Start();
         }
 
