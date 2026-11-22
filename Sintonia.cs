@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.0.0")]
-[assembly: AssemblyFileVersion("1.9.0.0")]
+[assembly: AssemblyVersion("1.9.1.0")]
+[assembly: AssemblyFileVersion("1.9.1.0")]
 
 static class Program
 {
@@ -2397,6 +2397,12 @@ class Painel : Form
             if (Math.Abs(alvoP - fpa) < 0.02f) fpa = alvoP;
             partesAnim[k] = fpa; layout = true;
         }
+        if (midiaDesl != 0f && !arrastoMidia)
+        {
+            midiaDesl *= 0.72f;
+            if (Math.Abs(midiaDesl) < 0.6f) midiaDesl = 0f;
+            mexeu = true; Invalidate();
+        }
         float alvoL = listaPerfis ? 1f : 0f;
         if (listaAb != alvoL)
         {
@@ -2505,7 +2511,7 @@ class Painel : Form
         tRecarregar.Start();
         pcLigado.Clear();
         ConferirLigados();
-        midiaLocal = null; midiaRemota = null; lendoMidia = false;
+        midiasLocais = new List<Midia.Info>(); midiasRemotas = new List<Midia.Info>(); lendoMidia = false; remotoSoUma = false; arrastoMidia = false; midiaDesl = 0;
         if (app.TocandoAgora) { tMidia.Start(); PassoMidia(); }
         if (!app.LembrarPc) Alvo = null;
         else if (Alvo == null && !string.IsNullOrEmpty(app.UltimoPc) && app.Controlador) Alvo = app.ParPorId(app.UltimoPc);
@@ -2578,11 +2584,14 @@ class Painel : Form
     // ligado/desligado dos outros PCs (conferido uma vez ao abrir o painel)
     readonly Dictionary<string, bool> pcLigado = new Dictionary<string, bool>();
     // tocando agora
-    Midia.Info midiaLocal, midiaRemota;
-    Bitmap capaLocal; string capaChave;
-    bool lendoMidia;
+    List<Midia.Info> midiasLocais = new List<Midia.Info>(), midiasRemotas = new List<Midia.Info>();
+    readonly Dictionary<string, Bitmap> capas = new Dictionary<string, Bitmap>();   // capa de cada sessao (deste PC)
+    string midiaSel;                  // sessao mostrada no cartao
+    bool lendoMidia, remotoSoUma;     // remotoSoUma: o outro PC e de versao que so manda a sessao atual
+    // arrastar o cartao de lado
+    bool arrastoMidia; int xMidia, dxMidia; float midiaDesl; int larguraMidia;
     readonly Timer tMidia = new Timer { Interval = 1500 };
-    const int Z_MIDIA_ANT = 30, Z_MIDIA_TOCAR = 31, Z_MIDIA_PROX = 32;
+    const int Z_MIDIA_ANT = 30, Z_MIDIA_TOCAR = 31, Z_MIDIA_PROX = 32, Z_MIDIA_CARD = 33, Z_MIDIA_PONTO = 34;
     Timer tAtualizandoPc;   // semNiveis: o outro PC e de uma versao que nao manda os niveis
     const int BARRAS = 5;
 
@@ -2701,70 +2710,95 @@ class Painel : Form
         }
     }
 
-    // ---- tocando agora ----
+    // ---- tocando agora (com carrossel quando ha mais de uma) ----
+    List<Midia.Info> Midias() { return Alvo == null ? midiasLocais : midiasRemotas; }
+
+    int IndiceMidia(List<Midia.Info> l)
+    {
+        if (l.Count == 0) return -1;
+        int i = l.FindIndex(x => x.Id == midiaSel);
+        if (i < 0) { i = l.FindIndex(x => x.Tocando); if (i < 0) i = 0; midiaSel = l[i].Id; }
+        return i;
+    }
+
     void PassoMidia()
     {
         if (!Visible || !app.TocandoAgora) { tMidia.Stop(); return; }
-        if (lendoMidia) return;
+        if (lendoMidia || arrastoMidia) return;
         lendoMidia = true;
         if (Alvo != null)
         {
             GarantirRemoto();
             var alvo = Alvo;
-            remoto.Pedir("midia", r =>
+            remoto.Pedir(remotoSoUma ? "midia" : "midias", r =>
             {
                 lendoMidia = false;
                 if (alvo != Alvo || r == null) return;
-                Midia.Info mi = null;
-                var c = r.Split('\t');
-                if (r.Length > 0 && c.Length >= 4) mi = new Midia.Info { Titulo = c[0], Artista = c[1], App = c[2], Tocando = c[3] == "1" };
-                AplicarMidia(ref midiaRemota, mi);
+                if (r == "nao" && !remotoSoUma) { remotoSoUma = true; return; }
+                var l = new List<Midia.Info>();
+                foreach (var linha in r.Split('\n'))
+                {
+                    var c = linha.Split('\t');
+                    if (remotoSoUma && c.Length >= 4) l.Add(new Midia.Info { Id = c[2] + "#0", Titulo = c[0], Artista = c[1], App = c[2], Tocando = c[3] == "1" });
+                    else if (!remotoSoUma && c.Length >= 5) l.Add(new Midia.Info { Id = c[0], Titulo = c[1], Artista = c[2], App = c[3], Tocando = c[4] == "1" });
+                }
+                AplicarMidias(ref midiasRemotas, l);
             });
             return;
         }
-        string chaveAtual = capaChave;
+        var temCapa = new HashSet<string>();
+        foreach (var k in capas.Keys) temCapa.Add(k);
+        int lado = E(38);
         new Thread(() =>
         {
-            Midia.Info mi = null;
-            try
-            {
-                mi = Midia.Ler(false);
-                if (mi != null && (mi.Titulo + "|" + mi.Artista) != chaveAtual) { var mc = Midia.Ler(true); if (mc != null) mi = mc; }
-            }
-            catch { mi = null; }
+            List<Midia.Info> l;
+            try { l = Midia.LerTodas(k => !temCapa.Contains(k)); } catch { l = new List<Midia.Info>(); }
             try
             {
                 BeginInvoke(new Action(() =>
                 {
                     lendoMidia = false;
-                    if (mi != null && mi.Capa != null)
+                    var usadas = new HashSet<string>();
+                    foreach (var mi in l)
                     {
-                        try { using (var ms = new MemoryStream(mi.Capa)) using (var im = Image.FromStream(ms)) { if (capaLocal != null) capaLocal.Dispose(); capaLocal = new Bitmap(im, E(38), E(38)); } capaChave = mi.Titulo + "|" + mi.Artista; }
-                        catch { }
+                        string k = mi.Id + "|" + mi.Titulo;
+                        usadas.Add(k);
+                        if (mi.Capa != null && !capas.ContainsKey(k))
+                            try { using (var ms = new MemoryStream(mi.Capa)) using (var im = Image.FromStream(ms)) capas[k] = new Bitmap(im, lado, lado); } catch { capas[k] = null; }
+                        else if (!capas.ContainsKey(k)) capas[k] = null;
                     }
-                    else if (mi != null && (mi.Titulo + "|" + mi.Artista) != capaChave) { if (capaLocal != null) capaLocal.Dispose(); capaLocal = null; capaChave = mi.Titulo + "|" + mi.Artista; }
-                    AplicarMidia(ref midiaLocal, mi);
+                    foreach (var k in new List<string>(capas.Keys)) if (!usadas.Contains(k)) { if (capas[k] != null) capas[k].Dispose(); capas.Remove(k); }
+                    AplicarMidias(ref midiasLocais, l);
                 }));
             }
             catch { lendoMidia = false; }
         }) { IsBackground = true, Priority = ThreadPriority.BelowNormal }.Start();
     }
 
-    void AplicarMidia(ref Midia.Info atual, Midia.Info nova)
+    static string Assinatura(List<Midia.Info> l)
     {
-        bool antes = atual != null, depois = nova != null;
-        bool mudou = antes != depois || (antes && (atual.Titulo != nova.Titulo || atual.Artista != nova.Artista || atual.Tocando != nova.Tocando || atual.App != nova.App));
+        var sb = new StringBuilder();
+        foreach (var x in l) sb.Append(x.Id).Append('|').Append(x.Titulo).Append('|').Append(x.Artista).Append('|').Append(x.Tocando).Append('\n');
+        return sb.ToString();
+    }
+
+    void AplicarMidias(ref List<Midia.Info> atual, List<Midia.Info> nova)
+    {
+        if (Assinatura(atual) == Assinatura(nova)) return;
+        bool alturaMuda = Math.Min(atual.Count, 2) != Math.Min(nova.Count, 2);   // nenhuma / uma / varias (pontinhos)
         atual = nova;
-        if (!mudou) return;
-        if (antes != depois) { Montar(null); Posicionar(); }   // o cartao apareceu/sumiu: ajusta a altura
+        if (alturaMuda) { Montar(null); Posicionar(); }
         Invalidate();
     }
 
     void ComandoMidia(string cmd)
     {
+        var l = Midias();
+        int i = IndiceMidia(l);
+        string id = i >= 0 ? l[i].Id : null;
         if (Alvo != null)
         {
-            EnviarRemoto("midia", "midia_cmd\t" + cmd, false);
+            EnviarRemoto("midia", "midia_cmd\t" + cmd + "\t" + (id ?? ""), false);
             var t = new Timer { Interval = 500 };
             t.Tick += (s2, e2) => { t.Stop(); t.Dispose(); PassoMidia(); };
             t.Start();
@@ -2772,31 +2806,74 @@ class Painel : Form
         }
         new Thread(() =>
         {
-            try { Midia.Comando(cmd); } catch { }
+            try { Midia.Comando(cmd, id); } catch { }
             Thread.Sleep(350);
             try { BeginInvoke(new Action(PassoMidia)); } catch { }
         }) { IsBackground = true }.Start();
     }
 
-    int CartaoMidia(Graphics g, int y, int pad, int W)
+    // termina o arrasto: passa para a vizinha se arrastou o bastante (com o resto do caminho animado)
+    void SoltarMidia()
     {
-        var mi = Alvo == null ? midiaLocal : midiaRemota;
-        if (!app.TocandoAgora || mi == null) return y;
+        var l = Midias();
+        int i = IndiceMidia(l), w = Math.Max(1, larguraMidia), dx = dxMidia;
+        arrastoMidia = false; dxMidia = 0; Capture = false;
+        if (i < 0) return;
+        if (dx < -w / 5 && i < l.Count - 1) { midiaSel = l[i + 1].Id; midiaDesl = dx + w; }
+        else if (dx > w / 5 && i > 0) { midiaSel = l[i - 1].Id; midiaDesl = dx - w; }
+        else midiaDesl = dx;
+        if (app.Animacoes) Animar(); else midiaDesl = 0;
+        Invalidate();
+    }
+
+    void ConteudoMidia(Graphics g, Midia.Info mi, Rectangle area, int dx)
+    {
         string app0 = Midia.NomeApp(mi.App);
         string titulo = string.IsNullOrEmpty(mi.Titulo) ? (app0.Length > 0 ? app0 : "Tocando agora") : mi.Titulo;
         string estado = mi.Tocando ? "Tocando" : "Pausado";
         string linha2 = string.IsNullOrEmpty(mi.Titulo)
-            ? (string.IsNullOrEmpty(mi.Artista) ? estado : mi.Artista)                      // sem titulo: o app ja esta no titulo
+            ? (string.IsNullOrEmpty(mi.Artista) ? estado : mi.Artista)
             : (string.IsNullOrEmpty(mi.Artista) ? (app0.Length > 0 ? app0 : estado) : (app0.Length > 0 ? mi.Artista + "  ·  " + app0 : mi.Artista));
+        var rArte = new Rectangle(area.X + E(10) + dx, area.Y + E(10), E(38), E(38));
+        Bitmap capa = null;
+        if (Alvo == null) capas.TryGetValue(mi.Id + "|" + mi.Titulo, out capa);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var pth = Desenho.Arred(new RectangleF(rArte.X, rArte.Y, rArte.Width, rArte.Height), E(5)))
+        {
+            if (capa != null) { var est = g.Save(); g.SetClip(pth, CombineMode.Intersect); g.DrawImage(capa, rArte); g.Restore(est); }
+            else { using (var b = new SolidBrush(cHover)) g.FillPath(b, pth); }
+        }
+        g.SmoothingMode = SmoothingMode.None;
+        if (capa == null) TextRenderer.DrawText(g, "\uE8D6", fGlifo, rArte, cFraco, TC);
+        int tx = rArte.Right + E(10), twm = area.Right - E(6) - tx + dx;
+        TextRenderer.DrawText(g, titulo, fNormal, new Rectangle(tx, area.Y + E(10), Math.Max(E(10), twm), E(20)), cTexto, TF);
+        if (linha2.Length > 0) TextRenderer.DrawText(g, linha2, fPequena, new Rectangle(tx, area.Y + E(31), Math.Max(E(10), twm), E(18)), cFraco, TF);
+    }
+
+    int CartaoMidia(Graphics g, int y, int pad, int W)
+    {
+        var l = Midias();
+        int i = IndiceMidia(l);
+        if (!app.TocandoAgora || i < 0) return y;
+        var mi = l[i];
+        bool varias = l.Count > 1;
         y += E(6);
-        var rc = new Rectangle(pad, y, W - pad * 2, E(58));
-        int bw = E(32);
-        var rProx = new Rectangle(rc.Right - E(8) - bw, rc.Y + (rc.Height - bw) / 2, bw, bw);
-        var rTocar = new Rectangle(rProx.X - bw - E(2), rProx.Y, bw, bw);
-        var rAnt = new Rectangle(rTocar.X - bw - E(2), rProx.Y, bw, bw);
+        var rc = new Rectangle(pad, y, W - pad * 2, E(58) + (varias ? E(10) : 0));
+        int bw = E(32), yb = rc.Y + (E(58) - bw) / 2;
+        var rProx = new Rectangle(rc.Right - E(8) - bw, yb, bw, bw);
+        var rTocar = new Rectangle(rProx.X - bw - E(2), yb, bw, bw);
+        var rAnt = new Rectangle(rTocar.X - bw - E(2), yb, bw, bw);
+        var area = new Rectangle(rc.X, rc.Y, rAnt.X - E(4) - rc.X, E(58));
+        larguraMidia = area.Width;
+        if (varias) zonas.Add(new Zona { R = area, Tipo = Z_MIDIA_CARD });
         zonas.Add(new Zona { R = rAnt, Tipo = Z_MIDIA_ANT });
         zonas.Add(new Zona { R = rTocar, Tipo = Z_MIDIA_TOCAR });
         zonas.Add(new Zona { R = rProx, Tipo = Z_MIDIA_PROX });
+        // pontinhos (um por sessao), clicaveis
+        int dp = E(6), esp = E(12), wp = l.Count * esp, xp = area.X + (area.Width - wp) / 2 + E(24);
+        if (varias)
+            for (int k = 0; k < l.Count; k++)
+                zonas.Add(new Zona { R = new Rectangle(xp + k * esp, rc.Bottom - E(16), esp, E(14)), Tipo = Z_MIDIA_PONTO, F = k });
         if (g != null)
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -2805,29 +2882,34 @@ class Painel : Form
                 using (var b = new SolidBrush(cCartao)) g.FillPath(b, p);
                 using (var pn = new Pen(cBorda)) g.DrawPath(pn, p);
             }
-            var rArte = new Rectangle(rc.X + E(10), rc.Y + (rc.Height - E(38)) / 2, E(38), E(38));
-            Bitmap capa = Alvo == null ? capaLocal : null;
-            if (capa != null)
-            {
-                using (var pth = Desenho.Arred(new RectangleF(rArte.X, rArte.Y, rArte.Width, rArte.Height), E(5)))
-                {
-                    var est = g.Save(); g.SetClip(pth, CombineMode.Intersect); g.DrawImage(capa, rArte); g.Restore(est);
-                }
-            }
-            else
-            {
-                using (var pth = Desenho.Arred(new RectangleF(rArte.X, rArte.Y, rArte.Width, rArte.Height), E(5))) using (var b = new SolidBrush(cHover)) g.FillPath(b, pth);
-                TextRenderer.DrawText(g, "\uE8D6", fGlifo, rArte, cFraco, TC);
-            }
             g.SmoothingMode = SmoothingMode.None;
-            int tx = rArte.Right + E(10), twm = rAnt.X - E(6) - tx;
-            TextRenderer.DrawText(g, titulo, fNormal, new Rectangle(tx, rc.Y + E(10), twm, E(20)), cTexto, TF);
-            if (linha2.Length > 0) TextRenderer.DrawText(g, linha2, fPequena, new Rectangle(tx, rc.Y + E(31), twm, E(18)), cFraco, TF);
+            // conteudo desliza (arrastando ou encaixando), recortado na area do cartao
+            int off = arrastoMidia ? dxMidia : (int)Math.Round(midiaDesl);
+            if (arrastoMidia && ((off > 0 && i == 0) || (off < 0 && i == l.Count - 1))) off = off / 3;   // nas pontas: resiste
+            var est = g.Save();
+            g.SetClip(new Rectangle(area.X + 1, area.Y + 1, area.Width, area.Height - 2), CombineMode.Intersect);
+            ConteudoMidia(g, mi, area, off);
+            if (off < 0 && i < l.Count - 1) ConteudoMidia(g, l[i + 1], area, off + area.Width);
+            if (off > 0 && i > 0) ConteudoMidia(g, l[i - 1], area, off - area.Width);
+            g.Restore(est);
             foreach (var kv in new[] { new KeyValuePair<Rectangle, int>(rAnt, Z_MIDIA_ANT), new KeyValuePair<Rectangle, int>(rTocar, Z_MIDIA_TOCAR), new KeyValuePair<Rectangle, int>(rProx, Z_MIDIA_PROX) })
             {
                 if (sobre != null && sobre.Tipo == kv.Value) Fundo(g, kv.Key, cHover, E(5));
                 string gl = kv.Value == Z_MIDIA_ANT ? "\uE892" : kv.Value == Z_MIDIA_PROX ? "\uE893" : (mi.Tocando ? "\uE769" : "\uE768");
                 TextRenderer.DrawText(g, gl, kv.Value == Z_MIDIA_TOCAR ? fGlifo : fGlifoP, kv.Key, cTexto, TC);
+            }
+            if (varias)
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                for (int k = 0; k < l.Count; k++)
+                {
+                    bool at = k == i, hv = sobre != null && sobre.Tipo == Z_MIDIA_PONTO && sobre.F == k;
+                    float d = at ? dp : dp - E(1.5f);
+                    float cx = xp + k * esp + esp / 2f, cy = rc.Bottom - E(9);
+                    using (var b = new SolidBrush(at ? cTexto : hv ? cFraco : Color.FromArgb(110, cFraco)))
+                        g.FillEllipse(b, cx - d / 2, cy - d / 2, d, d);
+                }
+                g.SmoothingMode = SmoothingMode.None;
             }
         }
         return rc.Bottom + E(2);
@@ -3928,7 +4010,7 @@ class Painel : Form
         sobre = z;
         if (mudou)
         {
-            Cursor = z == null ? Cursors.Default : (z.Tipo == Z_NOME_A || z.Tipo == Z_PADRAO) ? Cursors.SizeAll : Cursors.Hand;
+            Cursor = z == null ? Cursors.Default : (z.Tipo == Z_NOME_A || z.Tipo == Z_PADRAO) ? Cursors.SizeAll : z.Tipo == Z_MIDIA_CARD ? Cursors.SizeWE : Cursors.Hand;
             Invalidate();
         }
     }
@@ -4025,6 +4107,7 @@ class Painel : Form
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (arrastoMidia) { dxMidia = e.X - xMidia; Invalidate(); return; }
         if (arrastando != null) { DefinirValor(arrastando, e.X); return; }
         if (arrastoApp != null) { AtualizarArrasto(e.Location); return; }
         if (apertada != null && (apertada.Tipo == Z_NOME_A || (apertada.Tipo == Z_PARTES && !apertada.G.Sistema && Politica.Disponivel) || apertada.Tipo == Z_PADRAO || (apertada.Tipo == Z_PERFIL && apertada.P != null) || (apertada.Tipo == Z_MUDO_A && apertada.G != null && !apertada.G.Sistema)) && e.Button == MouseButtons.Left &&
@@ -4052,6 +4135,7 @@ class Painel : Form
         if (e.Button != MouseButtons.Left) return;
         var z = ZonaEm(e.Location);
         if (z == null) return;
+        if (z.Tipo == Z_MIDIA_CARD) { arrastoMidia = true; xMidia = e.X; dxMidia = 0; midiaDesl = 0; Capture = true; return; }   // arrastar de lado
         if (z.Tipo == Z_SLIDER_D || z.Tipo == Z_SLIDER_A || z.Tipo == Z_SLIDER_P) { arrastando = z; Capture = true; DefinirValor(z, e.X); return; }
         apertada = z;
         arrastoInicio = e.Location;
@@ -4060,6 +4144,7 @@ class Painel : Form
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (arrastoMidia) { SoltarMidia(); return; }
         if (arrastando != null) { arrastando = null; Capture = false; Invalidate(); return; }
         if (arrastoApp != null) { TerminarArrasto(); return; }
         var z = ZonaEm(e.Location);
@@ -4249,7 +4334,7 @@ class Painel : Form
                     if (remoto != null) { remoto.Fechar(); remoto = null; }
                     Alvo = novo; estadoRemoto = null; remotoFalhou = false; pedindoEstado = false; pendentes.Clear(); enviando.Clear();
                     niveisRemotos.Clear(); pedindoNiveis = false; semNiveis = false; historico.Clear();
-                    midiaRemota = null; bateriaPct = -1; lendoMidia = false;
+                    midiasRemotas = new List<Midia.Info>(); remotoSoUma = false; bateriaPct = -1; lendoMidia = false;
                     if (app.TocandoAgora) { if (!tMidia.Enabled) tMidia.Start(); }
                     abertura.Clear(); rolagem = 0;
                     int para = IndiceAlvo();
@@ -4293,9 +4378,21 @@ class Painel : Form
             case Z_MIDIA_ANT: ComandoMidia("anterior"); break;
             case Z_MIDIA_TOCAR:
                 {
-                    var mi = Alvo == null ? midiaLocal : midiaRemota;
-                    if (mi != null) { mi.Tocando = !mi.Tocando; Invalidate(); }   // resposta imediata no botao
+                    var l = Midias(); int i = IndiceMidia(l);
+                    if (i >= 0) { l[i].Tocando = !l[i].Tocando; Invalidate(); }   // resposta imediata no botao
                     ComandoMidia("tocar");
+                }
+                break;
+            case Z_MIDIA_PONTO:
+                {
+                    var l = Midias(); int i = IndiceMidia(l);
+                    if (z.F >= 0 && z.F < l.Count && z.F != i)
+                    {
+                        midiaSel = l[z.F].Id;
+                        midiaDesl = (z.F > i ? 1 : -1) * larguraMidia * 0.6f;   // entra deslizando do lado certo
+                        if (app.Animacoes) Animar(); else midiaDesl = 0;
+                        Invalidate();
+                    }
                 }
                 break;
             case Z_MIDIA_PROX: ComandoMidia("proxima"); break;
@@ -5297,7 +5394,7 @@ class Remoto
 // =====================================================================
 static class Midia
 {
-    public class Info { public string Titulo, Artista, App; public bool Tocando; public byte[] Capa; }
+    public class Info { public string Id, Titulo, Artista, App; public bool Tocando; public byte[] Capa; }
 
     static MethodInfo asTaskGen, asStream;
     static Type tGer, tSes, tProps, tPlay, tRef, tStream;
@@ -5344,6 +5441,51 @@ static class Midia
     {
         var s = Sessao();
         if (s == null) return null;
+        return LerSessao(s, comCapa);
+    }
+
+    // todas as sessoes (a atual primeiro); quer(chave) diz se precisa ler a capa daquela
+    public static List<Info> LerTodas(Func<string, bool> querCapa)
+    {
+        var l = new List<Info>();
+        Sessao();
+        if (gerente == null) return l;
+        var vistos = new Dictionary<string, int>();
+        foreach (var x in (System.Collections.IEnumerable)Chamar(tGer, gerente, "GetSessions"))
+        {
+            try
+            {
+                var i = LerSessao(x, false);
+                if (i == null) continue;
+                int n; vistos.TryGetValue(i.App ?? "", out n); vistos[i.App ?? ""] = n + 1;
+                i.Id = (i.App ?? "") + "#" + n;
+                if (querCapa != null && querCapa(i.Id + "|" + i.Titulo)) { var c = LerSessao(x, true); if (c != null) i.Capa = c.Capa; }
+                l.Add(i);
+            }
+            catch { }
+        }
+        return l;
+    }
+
+    static object SessaoPorId(string id)
+    {
+        Sessao();
+        if (gerente == null) return null;
+        if (!string.IsNullOrEmpty(id))
+        {
+            var vistos = new Dictionary<string, int>();
+            foreach (var x in (System.Collections.IEnumerable)Chamar(tGer, gerente, "GetSessions"))
+            {
+                string app = (string)Prop(tSes, x, "SourceAppUserModelId") ?? "";
+                int n; vistos.TryGetValue(app, out n); vistos[app] = n + 1;
+                if (app + "#" + n == id) return x;
+            }
+        }
+        return Chamar(tGer, gerente, "GetCurrentSession");
+    }
+
+    static Info LerSessao(object s, bool comCapa)
+    {
         var props = Esperar(Chamar(tSes, s, "TryGetMediaPropertiesAsync"), tProps, 2000);
         if (props == null) return null;
         var info = new Info { Titulo = (string)Prop(tProps, props, "Title"), Artista = (string)Prop(tProps, props, "Artist"), App = (string)Prop(tSes, s, "SourceAppUserModelId") };
@@ -5364,9 +5506,11 @@ static class Midia
     }
 
     // "tocar" / "proxima" / "anterior"
-    public static bool Comando(string c)
+    public static bool Comando(string c) { return Comando(c, null); }
+
+    public static bool Comando(string c, string id)
     {
-        var s = Sessao();
+        var s = SessaoPorId(id);
         if (s == null) return false;
         string m = c == "proxima" ? "TrySkipNextAsync" : c == "anterior" ? "TrySkipPreviousAsync" : "TryTogglePlayPauseAsync";
         var r = Esperar(Chamar(tSes, s, m), typeof(bool), 2000);
@@ -6881,8 +7025,15 @@ class App : ApplicationContext
                         if (mi == null) return "";
                         return T(mi.Titulo) + "\t" + T(mi.Artista) + "\t" + T(mi.App) + "\t" + (mi.Tocando ? 1 : 0);
                     }
+                case "midias":
+                    {
+                        var sb = new StringBuilder();
+                        foreach (var mi in Midia.LerTodas(null))
+                            sb.Append(T(mi.Id)).Append('\t').Append(T(mi.Titulo)).Append('\t').Append(T(mi.Artista)).Append('\t').Append(T(mi.App)).Append('\t').Append(mi.Tocando ? 1 : 0).Append('\n');
+                        return sb.ToString();
+                    }
                 case "midia_cmd":
-                    return Midia.Comando(c[1]) ? "ok" : "nao";
+                    return Midia.Comando(c[1], c.Length > 2 ? c[2] : null) ? "ok" : "nao";
                 case "icone":
                     {
                         foreach (var d in ListaRemota(false))
