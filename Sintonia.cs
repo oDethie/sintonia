@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.14.0")]
-[assembly: AssemblyFileVersion("1.9.14.0")]
+[assembly: AssemblyVersion("1.9.15.0")]
+[assembly: AssemblyFileVersion("1.9.15.0")]
 
 static class Program
 {
@@ -2619,7 +2619,8 @@ class Painel : Form
     Zona barraSobre;
     Rectangle rSecaoMidia;        // titulo + cartao do "Tocando agora" (mouse aqui = nao troca sozinho)   // topo do "Tocando agora" fixo (o que esta atras dele nao se desenha por cima)   // conta o tempo da troca automatica (reinicia em toda troca)
     readonly Timer tMidia = new Timer { Interval = 1500 };
-    const int Z_MIDIA_ANT = 30, Z_MIDIA_TOCAR = 31, Z_MIDIA_PROX = 32, Z_MIDIA_CARD = 33, Z_MIDIA_PONTO = 34, Z_MIDIA_ESPIA = 35, Z_MIDIA_RECOLHER = 36;
+    const int Z_MIDIA_ANT = 30, Z_MIDIA_TOCAR = 31, Z_MIDIA_PROX = 32, Z_MIDIA_CARD = 33, Z_MIDIA_PONTO = 34, Z_MIDIA_ESPIA = 35, Z_MIDIA_RECOLHER = 36, Z_MIDIA_MOVER = 37;
+    int yTopoFixo = int.MinValue;   // fim do "Tocando agora" grudado no topo (o que passa por baixo nao se desenha por cima)
     float midiaAb = 1f;   // 1 = "Tocando agora" aberto, 0 = mini player
     Timer tAtualizandoPc;   // semNiveis: o outro PC e de uma versao que nao manda os niveis
     const int BARRAS = 5;
@@ -2681,7 +2682,7 @@ class Painel : Form
                 // cada barra mostra um instante (da mais nova a mais antiga), do centro para as pontas
                 Array.Copy(h, 0, h, 1, BARRAS - 1);
                 h[0] = Math.Max(pico, h[1] * 0.6f);
-                if (!ClientRectangle.Contains(md.R) || md.R.Bottom > yRodape) continue;   // escondida atras do rodape fixo
+                if (!ClientRectangle.Contains(md.R) || md.R.Bottom > yRodape || md.R.Top < yTopoFixo) continue;   // escondida atras do rodape fixo
                 if (g == null) g = CreateGraphics();
                 using (var bmp = new Bitmap(md.R.Width, md.R.Height))
                 {
@@ -2911,11 +2912,20 @@ class Painel : Form
         }
     }
 
-    int CartaoMidia(Graphics g, int y, int pad, int W)
+    int AlturaMidia()
+    {
+        var l = Midias();
+        if (!app.TocandoAgora || IndiceMidia(l) < 0) return 0;
+        return E(12) + E(28) + E(58) + (l.Count > 1 ? E(8) : 0) + E(2);
+    }
+
+    int CartaoMidia(Graphics g, int y, int pad, int W) { return CartaoMidia(g, y, pad, W, false); }
+
+    int CartaoMidia(Graphics g, int y, int pad, int W, bool topo)
     {
         var l = Midias();
         int i = IndiceMidia(l);
-        if (!app.TocandoAgora || i < 0) { yRodape = int.MaxValue; return y; }
+        if (!app.TocandoAgora || i < 0) { yRodape = int.MaxValue; yTopoFixo = int.MinValue; return y; }
         var mi = l[i];
         bool varias = l.Count > 1;
         float ab = midiaAb;
@@ -2927,8 +2937,23 @@ class Painel : Form
         int hTotal = E(12) + E(28) + hCartao + E(2);
         int yNatural = y;
         int yFixo = ClientSize.Height - hTotal - (E(12) - E(8));
-        bool fixo = app.MidiaFixo && yFixo < yNatural && yFixo > E(80);
+        bool fixo = !topo && app.MidiaFixo && yFixo < yNatural && yFixo > E(80);
         yRodape = fixo ? yFixo : int.MaxValue;
+        // no topo: ao rolar, gruda no alto do painel e o resto passa por baixo (esmaecendo)
+        bool grudado = topo && app.MidiaFixo && yNatural < 0;
+        yTopoFixo = grudado ? hTotal : int.MinValue;
+        if (grudado)
+        {
+            y = 0;
+            zonas.Add(new Zona { R = new Rectangle(0, 0, W, hTotal), Tipo = -1 });
+            if (g != null)
+            {
+                int hEsm = E(26);
+                using (var b = new SolidBrush(cFundo)) g.FillRectangle(b, 0, 0, W, hTotal);
+                using (var lg = new LinearGradientBrush(new Rectangle(0, hTotal - 2, W, hEsm + 4), cFundo, Color.FromArgb(0, cFundo), LinearGradientMode.Vertical))
+                    g.FillRectangle(lg, 0, hTotal, W, hEsm);
+            }
+        }
         if (fixo)
         {
             y = yFixo;
@@ -2945,12 +2970,18 @@ class Painel : Form
         y += E(12);
         // titulo da secao + setinha de abrir/fechar (como nos cartoes das saidas)
         var rSeta = new Rectangle(W - pad - E(36), y - E(6), E(32), E(32));
+        var rMover = new Rectangle(rSeta.X - E(34), rSeta.Y, E(32), E(32));
         zonas.Add(new Zona { R = rSeta, Tipo = Z_MIDIA_RECOLHER });
+        zonas.Add(new Zona { R = rMover, Tipo = Z_MIDIA_MOVER });
         if (g != null)
         {
             bool hvT = sobre != null && sobre.Tipo == Z_MIDIA_RECOLHER;
             if (hvT) Fundo(g, rSeta, cHover, E(5));
             TextRenderer.DrawText(g, "Tocando agora", fNegrito, new Rectangle(pad + E(4), y, W - pad * 2 - E(40), E(22)), cTexto, TF);
+            // seta: embaixo -> sobe para o topo; em cima -> desce para o rodape
+            bool hvM = sobre != null && sobre.Tipo == Z_MIDIA_MOVER;
+            if (hvM) Fundo(g, rMover, cHover, E(5));
+            TextRenderer.DrawText(g, topo ? "\uE74B" : "\uE74A", fGlifoP, rMover, hvM ? cTexto : cFraco, TC);
             // alfinete: fixado = preso no rodape (em destaque); desafixado = rola junto com a lista
             TextRenderer.DrawText(g, app.MidiaFixo ? "\uE842" : "\uE718", fGlifoP, rSeta,
                 app.MidiaFixo ? cTexto : (hvT ? cTexto : cFraco), TC);
@@ -3038,7 +3069,7 @@ class Painel : Form
                 g.SmoothingMode = SmoothingMode.None;
             }
         }
-        return fixo ? yNatural + hTotal : rc.Bottom + E(2);
+        return (fixo || grudado) ? yNatural + hTotal : rc.Bottom + E(2);
     }
 
     static bool Atrasada(ParPC pc)
@@ -3580,6 +3611,10 @@ class Painel : Form
             y += E(14);
         }
 
+        // "Tocando agora" no topo: reserva o lugar aqui e desenha no fim (fica por cima quando gruda)
+        int yMidiaTopo = int.MinValue;
+        if (app.MidiaNoTopo) { int hm = AlturaMidia(); if (hm > 0) { yMidiaTopo = y; y += hm + E(4); } }
+
         // Saidas
         y = Secao(g, "Saída", y, pad, W, 0);
         y = Corpo(g, 0, y, pad, W);
@@ -3591,7 +3626,8 @@ class Painel : Form
             y = Secao(g, "Entrada", y, pad, W, 1);
             y = Corpo(g, 1, y, pad, W);
         }
-        y = CartaoMidia(g, y, pad, W);
+        if (app.MidiaNoTopo) { yRodape = int.MaxValue; if (yMidiaTopo != int.MinValue) CartaoMidia(g, yMidiaTopo, pad, W, true); else yTopoFixo = int.MinValue; }
+        else { yTopoFixo = int.MinValue; y = CartaoMidia(g, y, pad, W, false); }
         y += pad - E(8);
         alturaConteudo = y + rolagem;
     }
@@ -4517,6 +4553,10 @@ class Painel : Form
             case Z_MENU:
                 app.AbrirConfiguracoes();
                 app.AfastarConfig(Bounds);
+                break;
+            case Z_MIDIA_MOVER:
+                app.MidiaNoTopo = !app.MidiaNoTopo; app.SalvarConfig();
+                Montar(null); Posicionar(); AtualizarSobre(); Invalidate();
                 break;
             case Z_MIDIA_RECOLHER:
                 // fixar/desafixar no rodape
@@ -6037,7 +6077,8 @@ class App : ApplicationContext
     public bool TocandoAgora;          // cartao "Tocando agora" no painel (padrao: desligado)
     public int TrocaMidiaSeg = 10;
     public bool MidiaAberto = true;    // (antigo) sempre aberto
-    public bool MidiaFixo = true;      // "Tocando agora" preso no rodape quando a lista rola     // com varias tocando, passa para a proxima sozinho a cada N s (0 = nao troca)
+    public bool MidiaFixo = true;
+    public bool MidiaNoTopo;           // "Tocando agora" em cima (depois dos PCs e do perfil) ou embaixo      // "Tocando agora" preso no rodape quando a lista rola     // com varias tocando, passa para a proxima sozinho a cada N s (0 = nao troca)
     public bool MostrarBateria = true; // bateria do outro PC no titulo     // o painel abre no ultimo PC visto (inclusive depois de reiniciar)
     public string UltimoPc;
     // prioridade: lista ordenada de aparelhos (saidas e microfones), incluindo os desconectados
@@ -7797,6 +7838,7 @@ class App : ApplicationContext
                     case "tocando": TocandoAgora = v == "1"; break;
                     case "tocando_aberto": break;
                     case "tocando_fixo": MidiaFixo = v == "1"; break;
+                    case "tocando_topo": MidiaNoTopo = v == "1"; break;
                     case "tocando_troca": { int n; if (int.TryParse(v, out n) && n >= 0 && n <= 120) TrocaMidiaSeg = n; } break;
                     case "bateria_pc": MostrarBateria = v == "1"; break;
                     case "ultimo_pc": UltimoPc = v; break;
@@ -7921,7 +7963,7 @@ class App : ApplicationContext
                 "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "nome_app=" + (MostrarNomeApp ? 1 : 0), "pausar_fone=" + string.Join(";", PausarAoTirarFone), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
-            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
+            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("tocando_topo=" + (MidiaNoTopo ? 1 : 0)); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
             l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0)); l.Add("atualizar=" + (AtualizarSozinho ? 1 : 0));
             l.Add("prioridade_auto=" + (PrioridadeAuto ? 1 : 0));
             l.Add("prio0=" + string.Join(";", Prioridade[0])); l.Add("prio1=" + string.Join(";", Prioridade[1]));
