@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.13.0")]
-[assembly: AssemblyFileVersion("1.9.13.0")]
+[assembly: AssemblyVersion("1.9.14.0")]
+[assembly: AssemblyFileVersion("1.9.14.0")]
 
 static class Program
 {
@@ -700,6 +700,8 @@ static class Audio
                     Soltar(ps);
                 }
                 if (string.IsNullOrEmpty(x.NomeOriginal)) x.NomeOriginal = fluxo == 0 ? "Saída de som" : "Microfone";
+                string ctrl = NomeControle(x.Adaptador);
+                if (ctrl != null) x.NomeOriginal = fluxo == 0 ? ctrl : ctrl + " (microfone)";   // o Windows so chama de "Alto-falantes"/"Microfone"
                 string ren;
                 x.Nome = nomes != null && nomes.TryGetValue(x.Id, out ren) ? ren : x.NomeOriginal;
                 x.Padrao = string.Equals(x.Id, pad, StringComparison.OrdinalIgnoreCase);
@@ -926,8 +928,19 @@ static class Audio
         finally { Soltar(d); }
     }
 
+    // controle de videogame com fone/alto-falante (o Windows nao diz no nome, so no adaptador)
+    public static string NomeControle(string adaptador)
+    {
+        if (string.IsNullOrEmpty(adaptador)) return null;
+        string a = adaptador.ToLowerInvariant();
+        if (a.Contains("dualsense") || a.Contains("dualshock") || a == "wireless controller" || a.Contains("ps5") || a.Contains("ps4")) return "Controle PlayStation";
+        if (a.Contains("xbox")) return "Controle Xbox";
+        return null;
+    }
+
     public static char Glifo(Disp d)
     {
+        if (NomeControle(d.Adaptador) != null) return '\uE7FC';   // controle
         if (d.Fluxo == 1) return '\uE720';
         switch (d.Forma)
         {
@@ -3819,7 +3832,7 @@ class Painel : Form
                 int y2 = y + hLinha1;
                 var rMudo = new Rectangle(colIcone - E(17), y2 + E(1), E(34), E(34));
                 bool comTeste = d.Fluxo == 0;   // saidas: botao de som de teste logo abaixo da setinha
-                var rSl = new Rectangle(xTexto - E(10), y2, cw - (xTexto - x0) - E(44) - (comTeste ? E(34) : 0), hLinha2);
+                var rSl = new Rectangle(xTexto - E(10), y2, cw - (xTexto - x0) - E(44) - (comTeste ? E(24) : 0), hLinha2);
                 var rTeste = new Rectangle(rCh.X, y2 + E(1), rCh.Width, E(34));
                 if (f >= 1f) { Add(rMudo, Z_MUDO_D, d, null, null); Add(rSl, Z_SLIDER_D, d, null, null); if (comTeste) Add(rTeste, Z_TESTE, d, null, null); }
                 if (g != null && comTeste)
@@ -4395,7 +4408,7 @@ class Painel : Form
         v = Math.Max(0f, Math.Min(1f, v));
         if (Alvo != null)
         {
-            d.Vol = v; if (v > 0) d.Mudo = false;
+            d.Vol = v; if (v > 0 && d.Fluxo == 0) d.Mudo = false;
             EnviarRemoto("vd|" + d.Id, "vold\t" + d.Id + "\t" + Num(v), false);
             return;
         }
@@ -4404,7 +4417,7 @@ class Painel : Form
         {
             d.Ep.SetMasterVolumeLevelScalar(v, ref Audio.Ctx);
             d.Vol = v;
-            if (d.Mudo && v > 0) { d.Ep.SetMute(false, ref Audio.Ctx); d.Mudo = false; }
+            if (d.Mudo && v > 0 && d.Fluxo == 0) { d.Ep.SetMute(false, ref Audio.Ctx); d.Mudo = false; }   // mic mudo so desmuta no botao
         }
         catch { }
     }
@@ -7283,7 +7296,7 @@ class App : ApplicationContext
                             if (d.Ep.GetMasterVolumeLevelScalar(out ant) != 0) ant = d.Vol;
                             if (d.Ep.GetMute(out mAnt) != 0) mAnt = d.Mudo;
                             d.Ep.SetMasterVolumeLevelScalar(v, ref Audio.Ctx); d.Vol = v;
-                            if (mAnt && v > 0) { d.Ep.SetMute(false, ref Audio.Ctx); d.Mudo = false; }
+                            if (mAnt && v > 0 && d.Fluxo == 0) { d.Ep.SetMute(false, ref Audio.Ctx); d.Mudo = false; }
                             if (Math.Abs(v - ant) > 0.004f) Atividade(null, Audio.Glifo(d), v > ant ? 1 : -1);
                         }
                         else { d.Mudo = c[2] == "1"; d.Ep.SetMute(d.Mudo, ref Audio.Ctx); Atividade(null, Audio.Glifo(d), d.Mudo ? 2 : 3); }
