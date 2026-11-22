@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.17.0")]
-[assembly: AssemblyFileVersion("1.9.17.0")]
+[assembly: AssemblyVersion("1.9.19.0")]
+[assembly: AssemblyFileVersion("1.9.19.0")]
 
 static class Program
 {
@@ -2336,6 +2336,7 @@ class Painel : Form
         };
         tAnim.Tick += (s, e) => PassoAnimacao();
         tMidia.Tick += (s, e) => PassoMidia();
+        tViz.Tick += (s, e) => PassoViz();
         tSom.Tick += (s, e) => PassoSom();
     }
 
@@ -2535,6 +2536,8 @@ class Painel : Form
         ultimaTrocaMidia = DateTime.Now;
         midiaAb = 1f;
         if (app.TocandoAgora) { tMidia.Start(); PassoMidia(); }
+        nivelViz = 0; Array.Clear(histViz, 0, histViz.Length);
+        if (app.TocandoAgora && app.Mostrador != 0) tViz.Start();
         if (!app.LembrarPc) Alvo = null;
         else if (Alvo == null && !string.IsNullOrEmpty(app.UltimoPc) && app.Controlador) Alvo = app.ParPorId(app.UltimoPc);
         pcPos = -1f;
@@ -2620,7 +2623,14 @@ class Painel : Form
     Rectangle rSecaoMidia;        // titulo + cartao do "Tocando agora" (mouse aqui = nao troca sozinho)   // topo do "Tocando agora" fixo (o que esta atras dele nao se desenha por cima)   // conta o tempo da troca automatica (reinicia em toda troca)
     readonly Timer tMidia = new Timer { Interval = 1500 };
     const int Z_MIDIA_ANT = 30, Z_MIDIA_TOCAR = 31, Z_MIDIA_PROX = 32, Z_MIDIA_CARD = 33, Z_MIDIA_PONTO = 34, Z_MIDIA_ESPIA = 35, Z_MIDIA_RECOLHER = 36, Z_MIDIA_MOVER = 37;
-    int yTopoFixo = int.MinValue;   // fim do "Tocando agora" grudado no topo (o que passa por baixo nao se desenha por cima)
+    int yTopoFixo = int.MinValue;
+    // mostrador do som no cartao
+    readonly Timer tViz = new Timer { Interval = 50 };   // 20 quadros/s, so com o painel aberto e algo tocando
+    Rectangle rcMidia;           // cartao do "Tocando agora" (para redesenhar so a barrinha)
+    float vizDesenhado = -1f;    // nivel ja desenhado (nao redesenha sem mudanca)
+    float nivelViz; readonly float[] histViz = new float[40];
+    int ultYMidia = int.MinValue; bool ultTopoMidia;
+    Bitmap quadroViz;   // reaproveitado entre os quadros da animacao   // fim do "Tocando agora" grudado no topo (o que passa por baixo nao se desenha por cima)
     float midiaAb = 1f;   // 1 = "Tocando agora" aberto, 0 = mini player
     Timer tAtualizandoPc;   // semNiveis: o outro PC e de uma versao que nao manda os niveis
     const int BARRAS = 5;
@@ -2892,7 +2902,13 @@ class Painel : Form
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using (var pth = Desenho.Arred(new RectangleF(rArte.X, rArte.Y, rArte.Width, rArte.Height), E(4)))
         {
-            if (capa != null) { var est = g.Save(); g.SetClip(pth, CombineMode.Intersect); g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.DrawImage(capa, rArte); g.Restore(est); }
+            if (capa != null)
+            {
+                var est = g.Save(); g.SetClip(pth, CombineMode.Intersect);
+                if (capa.Width == rArte.Width && capa.Height == rArte.Height) g.DrawImageUnscaled(capa, rArte.Location);   // ja no tamanho: so copia
+                else { g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.DrawImage(capa, rArte); }
+                g.Restore(est);
+            }
             else { using (var b = new SolidBrush(cHover)) g.FillPath(b, pth); }
         }
         g.SmoothingMode = SmoothingMode.None;
@@ -2923,6 +2939,7 @@ class Painel : Form
 
     int CartaoMidia(Graphics g, int y, int pad, int W, bool topo)
     {
+        ultYMidia = y; ultTopoMidia = topo;
         var l = Midias();
         int i = IndiceMidia(l);
         if (!app.TocandoAgora || i < 0) { yRodape = int.MaxValue; yTopoFixo = int.MinValue; return y; }
@@ -2988,6 +3005,7 @@ class Painel : Form
         }
         y += E(28);
         var rc = new Rectangle(pad, y, W - pad * 2, hCartao);
+        rcMidia = rc;
         rSecaoMidia = new Rectangle(0, rc.Y - E(40), W, rc.Height + E(48));
         int bw = E(32), yb = rc.Y + (hConteudo - bw) / 2;
         int espia = extras ? E(20) : 0;          // parte visivel da capa da proxima
@@ -3014,6 +3032,31 @@ class Painel : Form
             {
                 using (var b = new SolidBrush(cCartao)) g.FillPath(b, p);
                 using (var pn = new Pen(cBorda)) g.DrawPath(pn, p);
+                if (app.Mostrador == 1 && mi.Tocando)
+                {
+                    // barras de fundo: bem apagadas, mais fortes no centro e sumindo nas pontas
+                    var est5 = g.Save();
+                    g.SetClip(p, CombineMode.Intersect);
+                    int nb = Math.Max(12, rc.Width / E(10));
+                    float wb = rc.Width / (float)nb;
+                    for (int k = 0; k < nb; k++)
+                    {
+                        float centro = 1f - Math.Abs(k - nb / 2f) / (nb / 2f);
+                        float hv = histViz[Math.Min(histViz.Length - 1, (int)Math.Abs(k - nb / 2f))];
+                        float hb = E(2) + hv * rc.Height * 0.62f * (0.55f + 0.45f * (float)Math.Abs(Math.Sin(k * 1.9)));
+                        using (var b = new SolidBrush(Color.FromArgb((int)(12 + 26 * centro), cAcento)))
+                            g.FillRectangle(b, rc.X + k * wb + E(1), rc.Bottom - hb, Math.Max(1f, wb - E(2.5f)), hb);
+                    }
+                    g.Restore(est5);
+                }
+            }
+            if (app.Mostrador == 2)
+            {
+                // barrinha lateral: cresce e encolhe com o som (como a que marca a saida padrao)
+                float hl = E(8) + (mi.Tocando ? nivelViz : 0f) * (rc.Height - E(18));
+                using (var b = new SolidBrush(mi.Tocando ? cAcento : Color.FromArgb(120, cFraco)))
+                using (var pl = Desenho.Arred(new RectangleF(rc.X, rc.Y + (rc.Height - hl) / 2f, E(3), hl), E(1.5f)))
+                    g.FillPath(b, pl);
             }
             g.SmoothingMode = SmoothingMode.None;
             // conteudo desliza (arrastando ou encaixando), recortado na area do cartao
@@ -3145,9 +3188,123 @@ class Painel : Form
         });
     }
 
+    // ---- mostrador do som do "Tocando agora" ----
+    float NivelMidia(Midia.Info mi)
+    {
+        if (mi == null || !mi.Tocando) return 0f;
+        string aum = (mi.App ?? "").ToLowerInvariant();
+        float pico = 0, v; bool achou = false;
+        if (Alvo == null)
+        {
+            foreach (var d in saidas)
+                foreach (var a in d.Apps)
+                {
+                    if (a.Sistema || string.IsNullOrEmpty(a.Exe)) continue;
+                    string b = a.Exe.ToLowerInvariant(); if (b.EndsWith(".exe")) b = b.Substring(0, b.Length - 4);
+                    if (b.Length < 3 || !aum.Contains(b)) continue;
+                    achou = true;
+                    foreach (var m in a.Medidores) try { if (m.GetPeakValue(out v) == 0 && v > pico) pico = v; } catch { }
+                }
+            if (!achou) { var dp = saidas.Find(x => x.Padrao); if (dp != null && dp.Medidor != null) try { if (dp.Medidor.GetPeakValue(out v) == 0) pico = v; } catch { } }
+        }
+        else
+        {
+            foreach (var kv in niveisRemotos)
+            {
+                if (!kv.Key.StartsWith("a|")) continue;
+                string exe = kv.Key.Substring(kv.Key.LastIndexOf('|') + 1).ToLowerInvariant();
+                if (exe.EndsWith(".exe")) exe = exe.Substring(0, exe.Length - 4);
+                if (exe.Length >= 3 && aum.Contains(exe)) { achou = true; if (kv.Value > pico) pico = kv.Value; }
+            }
+            if (!achou) { var dp = saidas.Find(x => x.Padrao); if (dp != null && niveisRemotos.TryGetValue("d|" + dp.Id, out v)) pico = v; }
+        }
+        // escala em decibeis, como as barrinhas: -50 dB = vazio, 0 dB = cheio
+        return pico <= 0.0003f ? 0f : Math.Max(0f, Math.Min(1f, 1f + 20f * (float)Math.Log10(pico) / 50f));
+    }
+
+    void PassoViz()
+    {
+        if (!Visible || !app.TocandoAgora || app.Mostrador == 0) { tViz.Stop(); return; }
+        if (arrastando != null || arrastoApp != null || arrastoMidia) return;
+        if (Alvo != null) PedirNiveis();
+        var l = Midias(); int i = IndiceMidia(l);
+        float alvo = i >= 0 ? NivelMidia(l[i]) : 0f;
+        float antes = nivelViz;
+        nivelViz += (alvo - nivelViz) * (alvo > nivelViz ? 0.45f : 0.18f);   // sobe rapido, desce suave
+        Array.Copy(histViz, 0, histViz, 1, histViz.Length - 1);
+        histViz[0] = nivelViz;
+        if (ultYMidia == int.MinValue || rSecaoMidia.Height <= 0) return;
+        if (app.Mostrador == 2)
+        {
+            if (Math.Abs(nivelViz - vizDesenhado) < 0.015f) return;   // mudanca invisivel: nao redesenha
+            RedesenharBarrinha();
+            return;
+        }
+        bool parado = Math.Abs(nivelViz - antes) < 0.004f && Math.Abs(histViz[histViz.Length - 1] - histViz[histViz.Length - 2]) < 0.004f;
+        if (parado) return;
+        RedesenharMidia();
+    }
+
+    // barrinha lateral: redesenha so a faixa fininha dela (barato)
+    void RedesenharBarrinha()
+    {
+        var rc = rcMidia;
+        if (rc.Height <= 0 || !ClientRectangle.Contains(rc) || rc.Bottom > yRodape || rc.Top < yTopoFixo) return;
+        var l = Midias(); int i = IndiceMidia(l);
+        bool tocando = i >= 0 && l[i].Tocando;
+        var faixa = new Rectangle(rc.X, rc.Y + E(4), E(5), rc.Height - E(8));
+        try
+        {
+            using (var g = CreateGraphics())
+            {
+                using (var b = new SolidBrush(cCartao)) g.FillRectangle(b, faixa);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                float hl = E(8) + (tocando ? nivelViz : 0f) * (rc.Height - E(18));
+                using (var b = new SolidBrush(tocando ? cAcento : Color.FromArgb(120, cFraco)))
+                using (var pl = Desenho.Arred(new RectangleF(rc.X, rc.Y + (rc.Height - hl) / 2f, E(3), hl), E(1.5f)))
+                    g.FillPath(b, pl);
+                // a borda do cartao passa por ali: redesenha o pedacinho dela
+                using (var pn = new Pen(cBorda)) g.DrawLine(pn, rc.X + 0.5f, faixa.Y, rc.X + 0.5f, faixa.Bottom);
+            }
+            vizDesenhado = nivelViz;
+        }
+        catch { }
+    }
+
+    // redesenha so a secao "Tocando agora" (o painel inteiro nao)
+    void RedesenharMidia()
+    {
+        var r = Rectangle.Intersect(rSecaoMidia, ClientRectangle);
+        if (r.Width <= 0 || r.Height <= 0) return;
+        int n0 = zonas.Count;
+        int yR = yRodape, yT = yTopoFixo; var rs = rSecaoMidia;
+        try
+        {
+            // desenha nas coordenadas reais (sem deslocar: o recorte do texto do GDI fica certo) num quadro reaproveitado
+            if (quadroViz == null || quadroViz.Width < ClientSize.Width || quadroViz.Height < r.Bottom)
+            {
+                if (quadroViz != null) quadroViz.Dispose();
+                quadroViz = new Bitmap(ClientSize.Width, Math.Max(r.Bottom, ClientSize.Height), System.Drawing.Imaging.PixelFormat.Format32bppPArgb);   // mesmo formato do desenho normal
+            }
+            using (var gb = Graphics.FromImage(quadroViz))
+            {
+                gb.SetClip(r);
+                gb.Clear(cFundo);
+                CartaoMidia(gb, ultYMidia, E(12), largura, ultTopoMidia);
+            }
+            using (var g = CreateGraphics()) g.DrawImage(quadroViz, r, r, GraphicsUnit.Pixel);
+        }
+        catch { }
+        finally
+        {
+            if (zonas.Count > n0) zonas.RemoveRange(n0, zonas.Count - n0);   // as zonas ja existem (do desenho normal)
+            yRodape = yR; yTopoFixo = yT; rSecaoMidia = rs;
+        }
+    }
+
     public void SomMudou()
     {
-        Audio.ComMedidor = app.MostrarSom;
+        Audio.ComMedidor = app.PrecisaMedidor;
         if (!Visible) return;
         Recarregar();
         if (app.MostrarSom) tSom.Start(); else { tSom.Stop(); historico.Clear(); Invalidate(); }
@@ -3159,7 +3316,8 @@ class Painel : Form
         tSom.Stop();
         historico.Clear();
         niveisRemotos.Clear(); pedindoNiveis = false; semNiveis = false;
-        tMidia.Stop(); lendoMidia = false;
+        tMidia.Stop(); lendoMidia = false; tViz.Stop();
+        if (quadroViz != null) { quadroViz.Dispose(); quadroViz = null; }
         if (remoto != null) { remoto.Fechar(); remoto = null; }   // fechou o painel: desconecta do outro PC
         pedindoEstado = false; pendentes.Clear(); enviando.Clear();
         fechando = false;
@@ -4466,7 +4624,7 @@ class Painel : Form
         else { vol = z.D.Vol; mudo = z.D.Mudo; alto = app.AlertaAtivo(z.D); f = fNegrito; }
         var r = new Rectangle(z.R.X, z.R.Y, z.R.Width + E(40), z.R.Height);
         if (!ClientRectangle.Contains(r)) { Invalidate(); return; }
-        using (var bmp = new Bitmap(r.Width, r.Height))
+        using (var bmp = new Bitmap(r.Width, r.Height, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
         {
             using (var gb = Graphics.FromImage(bmp))
             {
@@ -6120,7 +6278,9 @@ class App : ApplicationContext
     public int TrocaMidiaSeg = 10;
     public bool MidiaAberto = true;    // (antigo) sempre aberto
     public bool MidiaFixo = true;
-    public bool MidiaNoTopo;           // "Tocando agora" em cima (depois dos PCs e do perfil) ou embaixo      // "Tocando agora" preso no rodape quando a lista rola     // com varias tocando, passa para a proxima sozinho a cada N s (0 = nao troca)
+    public bool MidiaNoTopo;
+    public int Mostrador = 2;          // mostrador do som no "Tocando agora": 0 nenhum, 1 barras de fundo, 2 barrinha lateral
+    public bool PrecisaMedidor { get { return MostrarSom || (TocandoAgora && Mostrador != 0); } }           // "Tocando agora" em cima (depois dos PCs e do perfil) ou embaixo      // "Tocando agora" preso no rodape quando a lista rola     // com varias tocando, passa para a proxima sozinho a cada N s (0 = nao troca)
     public bool MostrarBateria = true; // bateria do outro PC no titulo     // o painel abre no ultimo PC visto (inclusive depois de reiniciar)
     public string UltimoPc;
     // prioridade: lista ordenada de aparelhos (saidas e microfones), incluindo os desconectados
@@ -6200,7 +6360,7 @@ class App : ApplicationContext
         bool primeiraVez = !File.Exists(arqConfig);
         LerConfig();
         if (string.IsNullOrEmpty(MeuId)) { MeuId = Guid.NewGuid().ToString("N"); if (!primeiraVez) SalvarConfig(); }
-        Audio.ComMedidor = MostrarSom;
+        Audio.ComMedidor = PrecisaMedidor;
         invocador.CreateControl();
         var h = invocador.Handle;
 
@@ -7495,6 +7655,7 @@ class App : ApplicationContext
     }
 
     public void DefinirSom(bool v) { MostrarSom = v; SalvarConfig(); painel.SomMudou(); }
+    public void MedidorMudou() { painel.SomMudou(); PainelMudou(); }
 
     // Coloca a janela de Configuracoes ao lado do painel (sem ficar por baixo dele)
     public void AfastarConfig(Rectangle r)
@@ -7882,6 +8043,7 @@ class App : ApplicationContext
                     case "tocando_aberto": break;
                     case "tocando_fixo": MidiaFixo = v == "1"; break;
                     case "tocando_topo": MidiaNoTopo = v == "1"; break;
+                    case "tocando_mostrador": { int n; if (int.TryParse(v, out n) && n >= 0 && n <= 2) Mostrador = n; } break;
                     case "tocando_troca": { int n; if (int.TryParse(v, out n) && n >= 0 && n <= 120) TrocaMidiaSeg = n; } break;
                     case "bateria_pc": MostrarBateria = v == "1"; break;
                     case "ultimo_pc": UltimoPc = v; break;
@@ -8006,7 +8168,7 @@ class App : ApplicationContext
                 "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "nome_app=" + (MostrarNomeApp ? 1 : 0), "pausar_fone=" + string.Join(";", PausarAoTirarFone), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
-            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("tocando_topo=" + (MidiaNoTopo ? 1 : 0)); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
+            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("tocando_topo=" + (MidiaNoTopo ? 1 : 0)); l.Add("tocando_mostrador=" + Mostrador); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
             l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0)); l.Add("atualizar=" + (AtualizarSozinho ? 1 : 0));
             l.Add("prioridade_auto=" + (PrioridadeAuto ? 1 : 0));
             l.Add("prio0=" + string.Join(";", Prioridade[0])); l.Add("prio1=" + string.Join(";", Prioridade[1]));
@@ -8386,7 +8548,21 @@ class Configuracoes : Form
             Chave("Mostrar o som tocando", "Barrinhas animadas ao lado de cada saída e app, conforme o som que está tocando. Só funciona com o painel aberto",
                 () => app.MostrarSom, v => app.DefinirSom(v));
             Chave("Tocando agora", "Cartão no fim do painel com a música ou vídeo que está tocando (Spotify, YouTube…) e os botões anterior, tocar/pausar e próxima. Também do outro PC",
-                () => app.TocandoAgora, v => { app.TocandoAgora = v; app.SalvarConfig(); app.PainelMudou(); });
+                () => app.TocandoAgora, v => { app.TocandoAgora = v; app.SalvarConfig(); app.MedidorMudou(); });
+            if (app.TocandoAgora)
+                Botao("Mostrador do som", "Anima o cartão \"Tocando agora\" conforme o som do app que está tocando. Só com o painel aberto",
+                    () => app.Mostrador == 1 ? "Barras de fundo" : app.Mostrador == 2 ? "Barrinha lateral" : "Nenhum", r =>
+                    {
+                        var m = NovoMenu();
+                        foreach (var op0 in new[] { 2, 1, 0 })
+                        {
+                            int op = op0;
+                            var it = new ToolStripMenuItem(op == 1 ? "Barras de fundo" : op == 2 ? "Barrinha lateral (padrão)" : "Nenhum") { Checked = app.Mostrador == op };
+                            it.Click += (s2, e2) => { app.Mostrador = op; app.SalvarConfig(); app.MedidorMudou(); Montar(); Invalidate(); };
+                            m.Items.Add(it);
+                        }
+                        MostrarMenu(m, r);
+                    });
             if (app.TocandoAgora)
                 Botao("Trocar de cartão sozinho", "Com mais de uma música ou vídeo tocando, passa para o próximo sozinho. Pausa enquanto o mouse está em cima do cartão",
                     () => app.TrocaMidiaSeg == 0 ? "Não trocar" : "A cada " + app.TrocaMidiaSeg + " s", r =>
