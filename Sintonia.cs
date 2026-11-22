@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.9.0")]
-[assembly: AssemblyFileVersion("1.9.9.0")]
+[assembly: AssemblyVersion("1.9.10.0")]
+[assembly: AssemblyFileVersion("1.9.10.0")]
 
 static class Program
 {
@@ -4352,8 +4352,8 @@ class Painel : Form
         var z = ZonaEm(e.Location);
         // A roda so rola a lista; mudar volume pela roda no painel e opcional (desligado por padrao)
         var agora = DateTime.Now;
-        bool parado = barraSobre != null && z != null && Igual(z, barraSobre) && (agora - barraDesde).TotalMilliseconds >= 250;
-        bool rolando = (agora - ultimaRolagem).TotalMilliseconds < 400;
+        bool parado = barraSobre != null && z != null && Igual(z, barraSobre) && (agora - barraDesde).TotalMilliseconds >= 150;
+        bool rolando = (agora - ultimaRolagem).TotalMilliseconds < 250;
         if (app.RodaPainel && z != null && (z.Tipo == Z_SLIDER_D || z.Tipo == Z_SLIDER_A || z.Tipo == Z_SLIDER_P) && parado && !rolando)
         {
             float passo = app.Passo / 100f * (e.Delta / 120f);
