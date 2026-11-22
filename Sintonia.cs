@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.22.0")]
-[assembly: AssemblyFileVersion("1.9.22.0")]
+[assembly: AssemblyVersion("1.9.23.0")]
+[assembly: AssemblyFileVersion("1.9.23.0")]
 
 static class Program
 {
@@ -2332,7 +2332,7 @@ class Painel : Form
 
     class Zona { public Rectangle R; public int Tipo; public Disp D; public GrupoApp G; public Perfil P; public int F; public string Id; }
     const int Z_RECOLHER = 10, Z_NOME_A = 11, Z_ESCONDIDOS = 12, Z_MOSTRAR = 13, Z_USAR = 14, Z_PC = 15, Z_TENTAR = 16, Z_LISTA_PERFIS = 17,
-              Z_PARTES = 18, Z_SLIDER_P = 19, Z_MUDO_P = 20, Z_TESTE = 21, Z_PRIORIDADE = 22, Z_USO = 23, Z_NOITE = 24;
+              Z_PARTES = 18, Z_SLIDER_P = 19, Z_MUDO_P = 20, Z_TESTE = 21, Z_PRIORIDADE = 22, Z_USO = 23, Z_NOITE = 24, Z_ATUALIZAR_PC = 25;
     string testando;   // saida tocando o som de teste agora   // janelas de um app: setinha, barra e mudo de cada uma
     // apps com as janelas abertas no painel (saida|exe); nao e guardado: o painel abre sempre fechado
     readonly HashSet<string> partesAbertas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -3881,6 +3881,40 @@ class Painel : Form
                 }
             }
             y += rB.Height + E(12);
+
+            // outro PC com versao mais velha: faixa fina com o botao "Atualizar" (some enquanto atualiza)
+            var pa = Alvo;
+            if (pa != null && pa.Versao != null && Atrasada(pa) && atualizandoPc != pa.Id && estadoRemoto != null && !remotoFalhou)
+            {
+                bool podeRemoto = pa.Versao != "";   // versoes bem antigas nao sabem se atualizar pela rede
+                var rF = new Rectangle(pad, y - E(4), W - pad * 2, E(34));
+                Color amarelo = escuro ? Color.FromArgb(247, 185, 20) : Color.FromArgb(176, 120, 0);
+                string tb = "Atualizar";
+                int bw = TextRenderer.MeasureText(tb, fPequena, Size.Empty, TextFormatFlags.NoPadding).Width + E(22);
+                var rBt = new Rectangle(rF.Right - bw - E(6), rF.Y + (rF.Height - E(24)) / 2, bw, E(24));
+                if (podeRemoto) Add(rBt, Z_ATUALIZAR_PC, null, null, null);
+                if (g != null)
+                {
+                    using (var pth = Desenho.Arred(new RectangleF(rF.X, rF.Y, rF.Width, rF.Height), E(6)))
+                    using (var b = new SolidBrush(Color.FromArgb(escuro ? 26 : 34, amarelo)))
+                    { g.SmoothingMode = SmoothingMode.AntiAlias; g.FillPath(b, pth); g.SmoothingMode = SmoothingMode.None; }
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    using (var b = new SolidBrush(amarelo)) g.FillEllipse(b, rF.X + E(12), rF.Y + rF.Height / 2 - E(3.5f), E(7), E(7));
+                    g.SmoothingMode = SmoothingMode.None;
+                    string tf = podeRemoto ? "Versão " + Atualizador.Atual.ToString(3) + " disponível" : "Versão antiga: atualize no próprio PC uma vez";
+                    int xt = rF.X + E(28);
+                    TextRenderer.DrawText(g, tf, fPequena, new Rectangle(xt, rF.Y, (podeRemoto ? rBt.X : rF.Right) - xt - E(6), rF.Height), cTexto, TF);
+                    if (podeRemoto)
+                    {
+                        bool hb = Sobre(Z_ATUALIZAR_PC, null, null, null);
+                        using (var pth = Desenho.Arred(new RectangleF(rBt.X, rBt.Y, rBt.Width, rBt.Height), E(4)))
+                        using (var b = new SolidBrush(hb ? ControlPaint.Light(amarelo, 0.25f) : amarelo))
+                        { g.SmoothingMode = SmoothingMode.AntiAlias; g.FillPath(b, pth); g.SmoothingMode = SmoothingMode.None; }
+                        TextRenderer.DrawText(g, tb, fPequena, rBt, Color.FromArgb(32, 24, 0), TC);
+                    }
+                }
+                y += rF.Height + E(8);
+            }
         }
         else pcPos = -1f;
 
@@ -5149,6 +5183,9 @@ class Painel : Form
             case Z_MIDIA_PROX: ComandoMidia("proxima"); break;
             case Z_NOITE:
                 app.AlternarNoiteAgora();
+                break;
+            case Z_ATUALIZAR_PC:
+                AtualizarOutroPc(Alvo);
                 break;
             case Z_PRIORIDADE:
                 app.AbrirConfiguracoes(5);
