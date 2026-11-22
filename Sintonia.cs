@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.10.0")]
-[assembly: AssemblyFileVersion("1.9.10.0")]
+[assembly: AssemblyVersion("1.9.11.0")]
+[assembly: AssemblyFileVersion("1.9.11.0")]
 
 static class Program
 {
@@ -3332,11 +3332,16 @@ class Painel : Form
             int tw = TextRenderer.MeasureText(g, "Sintonia", fTitulo, Size.Empty, TextFormatFlags.NoPadding).Width;
             TextRenderer.DrawText(g, "Sintonia", fTitulo, rTit, cTexto, TF);
             if (sub.Length > 0)
-                TextRenderer.DrawText(g, sub, fNormal, new Rectangle(rTit.X + tw, rTit.Y, rTit.Width - tw, rTit.Height), cFraco, TF);
+            {
+                bool comBat = Alvo != null && app.MostrarBateria && bateriaPct >= 0;
+                int wBat = comBat ? E(78) : 0;
+                int wSub = Math.Max(E(20), rTit.Width - tw - wBat);
+                TextRenderer.DrawText(g, sub, fNormal, new Rectangle(rTit.X + tw, rTit.Y, wSub, rTit.Height), cFraco, TF);
+            }
             if (Alvo != null && app.MostrarBateria && bateriaPct >= 0)
             {
                 // bateria do outro PC: icone desenhado + porcentagem (raio quando carregando)
-                int swd = TextRenderer.MeasureText(g, sub, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width;
+                int swd = Math.Min(TextRenderer.MeasureText(g, sub, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width, Math.Max(E(20), rTit.Width - tw - E(78)));
                 int bx = rTit.X + tw + swd + E(10), cy = rTit.Y + rTit.Height / 2;
                 bool fraca = bateriaPct <= 20 && !bateriaCarregando;
                 Color cb = fraca ? Color.FromArgb(220, 70, 60) : cFraco;
@@ -6658,9 +6663,12 @@ class App : ApplicationContext
         AtualizarIcone();
     }
 
-    string PedirTexto(string titulo, string dica, string valor)
+    string PedirTexto(string titulo, string dica, string valor) { return PedirTexto(titulo, dica, valor, 40); }
+
+    string PedirTexto(string titulo, string dica, string valor, int max)
     {
-        using (var f = new JanelaTexto(titulo, dica, valor, TemaEscuro()))
+        if (valor != null && valor.Length > max) valor = valor.Substring(0, max);
+        using (var f = new JanelaTexto(titulo, dica, valor, TemaEscuro(), "Salvar", max))
         {
             if (f.ShowDialog() != DialogResult.OK) return null;
             string v = f.Valor.Replace("|", "").Replace(">", "").Replace(";", "").Replace("=", "").Replace("\r", "").Replace("\n", "");
@@ -7048,7 +7056,7 @@ class App : ApplicationContext
     static string NomeLimpo(string n)
     {
         n = (n ?? "").Replace("|", "").Replace("\t", " ").Replace("\r", "").Replace("\n", "").Replace("=", "").Trim();
-        if (n.Length > 40) n = n.Substring(0, 40);
+        if (n.Length > 16) n = n.Substring(0, 16);
         return n.Length == 0 ? "Outro PC" : n;
     }
 
@@ -7075,7 +7083,7 @@ class App : ApplicationContext
     {
         var pc = ParPorId(id);
         if (pc == null) return;
-        string n = PedirTexto("Renomear PC", "Um nome fácil para este PC (ex.: \"Notebook\", \"Sala\")", pc.Nome);
+        string n = PedirTexto("Renomear PC", "Um nome curto, até 16 letras (ex.: \"Notebook\", \"Sala\")", pc.Nome, 16);
         if (n == null) return;
         lock (pares) pc.Nome = NomeLimpo(n);
         SalvarConfig();
@@ -7480,7 +7488,7 @@ class App : ApplicationContext
 
     public void RenomearDispositivo(string id, string orig, string atual)
     {
-        string n = PedirTexto("Renomear dispositivo", "Original: " + orig, atual);
+        string n = PedirTexto("Renomear dispositivo", "Até 24 letras · original: " + orig, atual, 24);
         if (n == null) return;
         if (n == orig) Nomes.Remove(id); else Nomes[id] = n;
         ultimoId = null;
