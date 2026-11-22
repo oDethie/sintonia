@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.7.5.0")]
-[assembly: AssemblyFileVersion("1.7.5.0")]
+[assembly: AssemblyVersion("1.7.6.0")]
+[assembly: AssemblyFileVersion("1.7.6.0")]
 
 static class Program
 {
@@ -2198,7 +2198,7 @@ class Painel : Form
             if (r == null && atualizandoPc == alvo.Id && estadoRemoto != null) return;   // reiniciando para atualizar: mantem a tela
             if (r == null) { remotoFalhou = true; } else { remotoFalhou = false; estadoRemoto = r; }
             if (primeiro) Transicao(0);
-            if (primeiro && r != null && alvo.Versao == null) PedirVersao(alvo);
+            if (primeiro && r != null && atualizandoPc != alvo.Id) PedirVersao(alvo);   // a cada conexao (ele pode ter sido atualizado)
             Recarregar();
         });
     }
