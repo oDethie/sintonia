@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.7.6.0")]
-[assembly: AssemblyFileVersion("1.7.6.0")]
+[assembly: AssemblyVersion("1.7.7.0")]
+[assembly: AssemblyFileVersion("1.7.7.0")]
 
 static class Program
 {
@@ -619,6 +619,7 @@ static class Audio
     public static Guid IID_EP = new Guid("5CDF2C82-841E-4546-9722-0CF74078229A");
     public static Guid IID_SM2 = new Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F");
     public static Guid IID_MEDIDOR = new Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064");
+    static readonly uint MeuPid = (uint)Process.GetCurrentProcess().Id;
     public static bool ComMedidor;   // so pega os medidores quando a animacao esta ligada
     public static Guid Ctx = Guid.NewGuid();
 
@@ -743,6 +744,7 @@ static class Audio
                 bool sis = s.IsSystemSoundsSession() == 0;
                 string caminho = sis ? null : Processos.Caminho(pid);
                 if (st == 2 || (!inativos && st == 0) || (!sis && caminho == null)) { Soltar(s); continue; }
+                if (pid == MeuPid) { Soltar(s); continue; }   // o proprio Sintonia (som de teste) nao aparece na lista
                 string chave = sis ? "*sistema" : caminho.ToLowerInvariant();
                 GrupoApp g;
                 bool m; float v;
