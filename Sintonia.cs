@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.21.0")]
-[assembly: AssemblyFileVersion("1.9.21.0")]
+[assembly: AssemblyVersion("1.9.22.0")]
+[assembly: AssemblyFileVersion("1.9.22.0")]
 
 static class Program
 {
@@ -571,6 +571,66 @@ class Disp
     public IAudioMeterInformation Medidor;
     public List<GrupoApp> Apps = new List<GrupoApp>();
     public List<GrupoApp> Usando = new List<GrupoApp>();   // microfone: apps que estao captando agora
+    public bool Bluetooth;
+    public int Bateria = -1;   // fone Bluetooth que informa a bateria ao Windows (0-100); -1 = nao sabe
+}
+
+// =====================================================================
+//  Aparelhos Bluetooth: nome de verdade e bateria (o que o Windows mostra em Configuracoes > Bluetooth)
+//  Leve: le so os aparelhos Bluetooth, e no maximo 1 vez por minuto.
+// =====================================================================
+static class Bluetooth
+{
+    [StructLayout(LayoutKind.Sequential)] struct SP_DEVINFO_DATA { public uint cbSize; public Guid ClassGuid; public uint DevInst; public IntPtr Reserved; }
+    [StructLayout(LayoutKind.Sequential)] struct DEVPROPKEY { public Guid fmtid; public uint pid; public DEVPROPKEY(Guid g, uint p) { fmtid = g; pid = p; } }
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode)] static extern IntPtr SetupDiGetClassDevsW(IntPtr guid, string enumerador, IntPtr hwnd, int flags);
+    [DllImport("setupapi.dll")] static extern bool SetupDiEnumDeviceInfo(IntPtr h, int i, ref SP_DEVINFO_DATA d);
+    [DllImport("setupapi.dll")] static extern bool SetupDiDestroyDeviceInfoList(IntPtr h);
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode)] static extern bool SetupDiGetDevicePropertyW(IntPtr h, ref SP_DEVINFO_DATA d, ref DEVPROPKEY k, out uint tipo, byte[] buf, int tam, out int req, int flags);
+
+    static readonly DEVPROPKEY KContainer = new DEVPROPKEY(new Guid("8c7ed206-3f8a-4827-b3ab-ae9e1faefc6c"), 2);
+    static readonly DEVPROPKEY KNome = new DEVPROPKEY(new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), 14);
+    static readonly DEVPROPKEY KBateria = new DEVPROPKEY(new Guid("104EA319-6EE2-4701-BD47-8DDBF425BBE5"), 2);
+
+    public class Info { public string Nome; public int Bateria = -1; }
+    static Dictionary<Guid, Info> cache = new Dictionary<Guid, Info>();
+    static DateTime lido = DateTime.MinValue;
+
+    public static Dictionary<Guid, Info> Ler(bool forcar)
+    {
+        if (!forcar && (DateTime.Now - lido).TotalSeconds < 60) return cache;
+        var l = new Dictionary<Guid, Info>();
+        foreach (var en in new[] { "BTHENUM", "BTHLE", "BTHLEDEVICE", "BTHHFENUM" })
+        {
+            IntPtr h = SetupDiGetClassDevsW(IntPtr.Zero, en, IntPtr.Zero, 0x2 | 0x4);   // presentes, todas as classes
+            if (h == IntPtr.Zero || h == new IntPtr(-1)) continue;
+            try
+            {
+                var d = new SP_DEVINFO_DATA { cbSize = (uint)Marshal.SizeOf(typeof(SP_DEVINFO_DATA)) };
+                var buf = new byte[512];
+                for (int i = 0; SetupDiEnumDeviceInfo(h, i, ref d); i++)
+                {
+                    uint tipo; int req;
+                    var k = KContainer;
+                    if (!SetupDiGetDevicePropertyW(h, ref d, ref k, out tipo, buf, buf.Length, out req, 0) || req < 16) continue;
+                    var b16 = new byte[16]; Array.Copy(buf, b16, 16);
+                    var c = new Guid(b16);
+                    Info inf;
+                    if (!l.TryGetValue(c, out inf)) { inf = new Info(); l[c] = inf; }
+                    k = KBateria;
+                    if (SetupDiGetDevicePropertyW(h, ref d, ref k, out tipo, buf, buf.Length, out req, 0) && req >= 1 && buf[0] <= 100)
+                        inf.Bateria = Math.Max(inf.Bateria, buf[0]);
+                    k = KNome;
+                    if (inf.Nome == null && SetupDiGetDevicePropertyW(h, ref d, ref k, out tipo, buf, buf.Length, out req, 0) && req > 2)
+                        inf.Nome = Encoding.Unicode.GetString(buf, 0, req).TrimEnd('\0');
+                }
+            }
+            catch { }
+            finally { SetupDiDestroyDeviceInfoList(h); }
+        }
+        cache = l; lido = DateTime.Now;
+        return l;
+    }
 }
 
 class GrupoApp
@@ -631,6 +691,17 @@ static class Audio
     static readonly Guid PK_DEV = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0");
     static readonly Guid PK_IFACE = new Guid("026e516e-b814-414b-83cd-856d6fef4822");
     static readonly Guid PK_FORMA = new Guid("1da5d803-d492-4edd-8c23-e0c0ffee7f0e");
+    static readonly Guid PK_CONTAINER = new Guid("8c7ed206-3f8a-4827-b3ab-ae9e1faefc6c");
+
+    static Guid LerGuid(IPropertyStore ps, Guid g, int pid)
+    {
+        var k = new PROPERTYKEY(g, pid);
+        PROPVARIANT v;
+        if (ps.GetValue(ref k, out v) != 0) return Guid.Empty;
+        var r = v.vt == 72 /*VT_CLSID*/ && v.p != IntPtr.Zero ? (Guid)Marshal.PtrToStructure(v.p, typeof(Guid)) : Guid.Empty;
+        PropVariantClear(ref v);
+        return r;
+    }
 
     public static void Soltar(object o) { if (o != null) try { Marshal.ReleaseComObject(o); } catch { } }
 
@@ -693,6 +764,7 @@ static class Audio
             try
             {
                 var x = new Disp { Fluxo = fluxo };
+                Guid container = Guid.Empty;
                 d.GetId(out x.Id);
                 IPropertyStore ps;
                 if (d.OpenPropertyStore(0, out ps) == 0 && ps != null)
@@ -700,12 +772,25 @@ static class Audio
                     x.NomeOriginal = Texto(ps, PK_DEV, 2);
                     x.Adaptador = Texto(ps, PK_IFACE, 2);
                     x.Forma = Numero(ps, PK_FORMA, 0);
+                    container = LerGuid(ps, PK_CONTAINER, 2);
                     if (string.IsNullOrEmpty(x.NomeOriginal)) x.NomeOriginal = Texto(ps, PK_DEV, 14);
                     Soltar(ps);
                 }
                 if (string.IsNullOrEmpty(x.NomeOriginal)) x.NomeOriginal = fluxo == 0 ? "Saída de som" : "Microfone";
                 string ctrl = NomeControle(x.Adaptador);
                 if (ctrl != null) x.NomeOriginal = fluxo == 0 ? ctrl : ctrl + " (microfone)";   // o Windows so chama de "Alto-falantes"/"Microfone"
+                else
+                {
+                    // fone/caixa Bluetooth: o Windows chama de "Fones de ouvido"/"Headset"; o nome de verdade e o do aparelho
+                    Bluetooth.Info bi;
+                    if (container != Guid.Empty && Bluetooth.Ler(false).TryGetValue(container, out bi))
+                    {
+                        x.Bluetooth = true;
+                        x.Bateria = bi.Bateria;
+                        string nb = !string.IsNullOrEmpty(x.Adaptador) ? x.Adaptador : bi.Nome;
+                        if (!string.IsNullOrEmpty(nb)) { x.NomeOriginal = nb; x.Adaptador = "Bluetooth"; }   // o mesmo nome na saida e no microfone (a secao "Entrada" ja diz o que e)
+                    }
+                }
                 string ren;
                 x.Nome = nomes != null && nomes.TryGetValue(x.Id, out ren) ? ren : x.NomeOriginal;
                 x.Padrao = string.Equals(x.Id, pad, StringComparison.OrdinalIgnoreCase);
@@ -2360,6 +2445,11 @@ class Painel : Form
                     var a = new GrupoApp { Remoto = true, Exe = c[2], Nome = c[3], Vol = float.Parse(c[4], inv), Mudo = c[5] == "1", Ativo = c[6] == "1",
                                            Saida = c[7].Length == 0 ? null : c[7], Sistema = c[8] == "1" };
                     d.Apps.Add(a);
+                }
+                else if (c[0] == "K" && c.Length >= 3)
+                {
+                    Disp d; int pct;
+                    if (porId.TryGetValue(c[1], out d) && int.TryParse(c[2], out pct)) { d.Bateria = pct; d.Bluetooth = true; }
                 }
                 else if (c[0] == "U" && c.Length >= 4)
                 {
@@ -4073,7 +4163,16 @@ class Painel : Form
         Add(rCh, Z_RECOLHER, d, null, null);
         string tUsar = d.Fluxo == 0 ? "Usar como padrão" : "Usar como padrão";
         int bw = TextRenderer.MeasureText(tUsar, fPequena, Size.Empty, TextFormatFlags.NoPadding).Width + E(22);
-        var rUsar = new Rectangle(rCh.Left - bw - E(4), y + E(9), bw, E(26));
+        // bateria em porcentagem: numero verde a direita, antes da setinha
+        // (no modo anel, aparece so com o mouse no titulo, no mesmo lugar)
+        bool hovTit = (Sobre(Z_PADRAO, d, null, null) || Sobre(Z_USAR, d, null, null) || Sobre(Z_RECOLHER, d, null, null)) && arrastoApp == null;
+        string tPct = d.Bateria >= 0 && (app.BateriaModo == 2 || (app.BateriaModo == 1 && hovTit)) ? d.Bateria + "%" : null;
+        // centrada na mesma coluna do numero do volume, logo abaixo
+        int xNum = x0 + cw - E(54) - (d.Fluxo == 0 ? E(24) : 0) + E(20);
+        int twPct = tPct != null ? TextRenderer.MeasureText(tPct, fPequena, Size.Empty, TextFormatFlags.NoPadding).Width : 0;
+        xNum = Math.Min(xNum, rCh.Left + E(4) - (twPct + 1) / 2);   // microfone: o numero fica sob a setinha; ai encosta nela sem cobrir
+        int esqPct = tPct != null ? xNum - twPct / 2 - E(8) : rCh.Left - E(4);
+        var rUsar = new Rectangle(Math.Min(rCh.Left - E(4), esqPct) - bw, y + E(9), bw, E(26));
         if (!d.Padrao) Add(rUsar, Z_USAR, d, null, null);
         if (g != null)
         {
@@ -4083,9 +4182,27 @@ class Painel : Form
             TextRenderer.DrawText(g, (aberto ? '' : '').ToString(), fGlifoP, rCh, cFraco, TC);
             TextRenderer.DrawText(g, Audio.Glifo(d).ToString(), fGlifo, new Rectangle(colIcone - E(16), r1.Y, E(32), r1.Height),
                 d.Padrao ? cAcento : cTexto, TC);
+            if (app.BateriaModo == 1 && d.Bateria >= 0)
+            {
+                // bateria do fone: anel fino em volta do icone (verde; vermelho com 15% ou menos), esvazia conforme gasta
+                var cxy = CentroTinta(Audio.Glifo(d), fGlifo, new Rectangle(colIcone - E(16), r1.Y, E(32), r1.Height));
+                float raio = E(13.5f), cxA = cxy.X, cyA = cxy.Y;
+                var ra = new RectangleF(cxA - raio, cyA - raio, raio * 2, raio * 2);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                float lw = Math.Max(1.5f, E(2f));
+                using (var pn = new Pen(Color.FromArgb(escuro ? 45 : 35, cTexto), lw)) g.DrawEllipse(pn, ra);
+                using (var pn = new Pen(CorBateria(d.Bateria), lw) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    g.DrawArc(pn, ra, -90f, Math.Max(4f, 360f * d.Bateria / 100f));
+                g.SmoothingMode = SmoothingMode.None;
+            }
 
             // lado direito: selo "Padrao", botao "Usar como padrao" (no hover) ou resumo quando fechado
             int direita = rCh.Left - E(6);
+            if (tPct != null)
+            {
+                TextRenderer.DrawText(g, tPct, fPequena, new Rectangle(xNum - E(30), r1.Y, E(60), r1.Height), CorBateria(d.Bateria), TC);
+                direita = Math.Min(direita, esqPct);
+            }
             if (alvo)
             {
                 string t = "Soltar aqui";
@@ -4118,7 +4235,9 @@ class Painel : Form
             }
             int nomeW = Math.Max(E(20), direita - xTexto);
             bool comSom = app.MostrarSom && (d.Medidor != null || (Alvo != null && !semNiveis));
-            int nomeVis = Math.Max(E(20), nomeW - (comSom ? LarguraMed() + E(14) : 0));
+            bool comBat = false;   // a porcentagem do anel aparece a direita, ao lado da setinha
+            int wBatF = comBat ? E(44) : 0;
+            int nomeVis = Math.Max(E(20), nomeW - (comSom ? LarguraMed() + E(14) : 0) - wBatF);
             int nw = Math.Min(nomeVis, TextRenderer.MeasureText(g, d.Nome, fNegrito, Size.Empty, TextFormatFlags.NoPadding).Width);
             TextRenderer.DrawText(g, d.Nome, d.Padrao ? fNegrito : fNormal, new Rectangle(xTexto, r1.Y, nomeVis, r1.Height), cTexto, TF);
             int xm = xTexto + nw + E(10);
@@ -4127,6 +4246,12 @@ class Painel : Form
                 Medidor(g, xm, r1.Y + r1.Height / 2, hovCab ? cHover : cCartao, "d|" + d.Id, d.Medidor, null);
                 xm += LarguraMed() + E(4);
                 nw += LarguraMed() + E(14);
+            }
+            if (comBat)
+            {
+                // mouse no titulo: mostra a porcentagem do anel
+                TextRenderer.DrawText(g, d.Bateria + "%", fPequena, new Rectangle(xm + E(2), r1.Y, E(40), r1.Height), CorBateria(d.Bateria), TF);
+                nw += wBatF;
             }
             if (app.MostrarAdaptador && !string.IsNullOrEmpty(d.Adaptador) && nomeW - nw > E(40))
                 TextRenderer.DrawText(g, d.Adaptador, fPequena, new Rectangle(xTexto + nw + E(8), r1.Y + E(1), nomeW - nw - E(8), r1.Height), cFraco, TF);
@@ -4199,12 +4324,71 @@ class Painel : Form
         return y + h + E(8);
     }
 
+    // centro do desenho de verdade de um icone (a fonte de icones nao centraliza a tinta na caixa)
+    readonly Dictionary<string, PointF> centrosTinta = new Dictionary<string, PointF>();
+    PointF CentroTinta(char c, Font f, Rectangle caixa)
+    {
+        string k = c + "|" + f.Size + "|" + caixa.Width + "x" + caixa.Height;
+        PointF d;
+        if (!centrosTinta.TryGetValue(k, out d))
+        {
+            d = PointF.Empty;
+            try
+            {
+                using (var b = new Bitmap(caixa.Width, caixa.Height, System.Drawing.Imaging.PixelFormat.Format32bppRgb))
+                {
+                    using (var g = Graphics.FromImage(b))
+                    {
+                        g.Clear(Color.Black);
+                        TextRenderer.DrawText(g, c.ToString(), f, new Rectangle(0, 0, caixa.Width, caixa.Height), Color.White, Color.Black, TC);
+                    }
+                    int x0 = int.MaxValue, y0 = int.MaxValue, x1 = -1, y1 = -1;
+                    for (int y = 0; y < b.Height; y++)
+                        for (int x = 0; x < b.Width; x++)
+                        {
+                            var px = b.GetPixel(x, y);
+                            if (px.R + px.G + px.B < 200) continue;
+                            if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+                        }
+                    if (x1 >= 0) d = new PointF((x0 + x1 + 1) / 2f - caixa.Width / 2f, (y0 + y1 + 1) / 2f - caixa.Height / 2f);
+                }
+            }
+            catch { }
+            centrosTinta[k] = d;
+        }
+        return new PointF(caixa.X + caixa.Width / 2f + d.X, caixa.Y + caixa.Height / 2f + d.Y);
+    }
+
+    Color CorBateria(int pct)
+    {
+        if (pct <= 15) return Color.FromArgb(220, 70, 60);
+        return escuro ? Color.FromArgb(108, 203, 95) : Color.FromArgb(16, 124, 16);   // verde do Windows
+    }
+
+    // icone de bateria + porcentagem (largura ~E(56))
+    void BateriaPequena(Graphics g, int bx, int cy, int pct, bool carregando, Color cb)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var rc = new RectangleF(bx, cy - E(4), E(16), E(8));
+        using (var pn = new Pen(cb, Math.Max(1f, E(1.2f)))) using (var pth = Desenho.Arred(rc, E(1.5f))) g.DrawPath(pn, pth);
+        using (var b = new SolidBrush(cb))
+        {
+            g.FillRectangle(b, rc.Right + E(0.5f), cy - E(1.5f), E(1.5f), E(3));
+            float wf = Math.Max(E(1), (rc.Width - E(3)) * pct / 100f);
+            g.FillRectangle(b, rc.X + E(1.5f), rc.Y + E(1.5f), wf, rc.Height - E(3));
+        }
+        g.SmoothingMode = SmoothingMode.None;
+        int tx = bx + E(21);
+        if (carregando) { TextRenderer.DrawText(g, "\uE945", fGlifoP, new Rectangle(tx - E(2), cy - E(10), E(14), E(20)), cb, TC); tx += E(12); }
+        TextRenderer.DrawText(g, pct + "%", fPequena, new Rectangle(tx, cy - E(10), E(40), E(20)), cb, TF);
+    }
+
     // microfone: "Usando agora" + icone de cada app que esta captando (passe o mouse para ver o nome)
     void UsoLinha(Graphics g, Disp d, int y, int x0, int cw, int xTexto, bool clicavel)
     {
         int h = E(32), ti = E(18);
         if (g != null) using (var pn = new Pen(cBorda)) g.DrawLine(pn, x0 + E(12), y, x0 + cw - E(12), y);
-        int xl = xTexto - E(10);
+        int xl = x0 + E(16);   // alinhado com o icone do microfone (coluna da esquerda), como o cartao
         string rot = "Usando agora";
         int wr = TextRenderer.MeasureText(rot, fPequena, Size.Empty, TextFormatFlags.NoPadding).Width;
         int fim = x0 + cw - E(14);
@@ -6451,6 +6635,11 @@ class App : ApplicationContext
     public int Mostrador = 2;          // mostrador do som no "Tocando agora": 0 nenhum, 1 barras de fundo, 2 barrinha lateral
     public bool PrecisaMedidor { get { return MostrarSom || (TocandoAgora && Mostrador != 0); } }           // "Tocando agora" em cima (depois dos PCs e do perfil) ou embaixo      // "Tocando agora" preso no rodape quando a lista rola     // com varias tocando, passa para a proxima sozinho a cada N s (0 = nao troca)
     public bool UsoMic = true;         // mostra no cartao do microfone os apps que estao usando
+    public bool BateriaMostrar = true; // bateria dos fones Bluetooth
+    public int BateriaJeito = 1;       // 1 anel no icone, 2 porcentagem a direita
+    public int BateriaModo { get { return BateriaMostrar ? BateriaJeito : 0; } }
+    public bool BateriaFones { get { return BateriaModo != 0; } }
+    public bool AvisoBateria = true;   // notificacao quando um fone conectado chega a 15%
     // Modo noite: segura o volume em certas horas
     public bool Noite;                 // desligado por padrao
     public int NoiteIni = 22, NoiteFim = 7, NoiteMax = 30;   // horas (ini == fim: o dia todo) e volume maximo em %
@@ -6537,6 +6726,9 @@ class App : ApplicationContext
         Audio.ComMedidor = PrecisaMedidor;
         Audio.ComUso = UsoMic;
         tNoite.Tick += (s, e) => PassoNoite();
+        tBat.Tick += (s, e) => PassoBateria();
+        tBat.Start();
+        { var t1 = new Timer { Interval = 30000 }; t1.Tick += (s, e) => { t1.Stop(); t1.Dispose(); PassoBateria(); }; t1.Start(); }   // 1a conferida 30 s depois de abrir
         if (Noite) tNoite.Start();
         invocador.CreateControl();
         var h = invocador.Handle;
@@ -7278,6 +7470,32 @@ class App : ApplicationContext
 
     public void PainelMudou() { if (painel.Visible) painel.Recarregar(); }
 
+    // ================= Bateria fraca dos fones =================
+    // A cada 5 minutos (so com o aviso ligado): fone Bluetooth conectado com 15% ou menos -> uma notificacao
+    readonly Timer tBat = new Timer { Interval = 5 * 60 * 1000 };
+    readonly HashSet<string> batAvisada = new HashSet<string>();
+    void PassoBateria()
+    {
+        if (!BateriaFones || !AvisoBateria) return;
+        try
+        {
+            var l = Audio.Listar(0, false, false, Nomes);
+            l.AddRange(Audio.Listar(1, false, false, Nomes));
+            var vistos = new HashSet<string>();
+            foreach (var d in l)
+            {
+                if (!d.Bluetooth || d.Bateria < 0) continue;
+                string nome = d.Fluxo == 1 && d.Nome.EndsWith(" (microfone)") ? d.Nome.Substring(0, d.Nome.Length - 12) : d.Nome;
+                if (!vistos.Add(nome)) continue;   // saida e microfone do mesmo fone: um aviso so
+                if (d.Bateria > 25) { batAvisada.Remove(nome); continue; }
+                if (d.Bateria <= 15 && batAvisada.Add(nome))
+                    icone.ShowBalloonTip(8000, "Bateria fraca", nome + " está com " + d.Bateria + "% de bateria.", ToolTipIcon.Warning);
+            }
+            Audio.Liberar(l);
+        }
+        catch { }
+    }
+
     // ================= Modo noite =================
     // Leve: sem o modo ligado nao roda nada. Ligado, confere a cada 0,5 s so o volume da saida padrao
     // (e, com "baixar o app que estourar", os medidores dos apps dessa saida).
@@ -7774,6 +7992,7 @@ class App : ApplicationContext
                     foreach (var pt in a.Partes)
                         sb.Append("P\t").Append(T(d.Id)).Append('\t').Append(T(a.Exe)).Append('\t').Append(pt.Pid).Append('\t').Append(T(pt.Nome))
                           .Append('\t').Append(N(pt.Vol)).Append('\t').Append(pt.Mudo ? 1 : 0).Append('\n');
+            if (d.Bateria >= 0) sb.Append("K\t").Append(T(d.Id)).Append('\t').Append(d.Bateria).Append('\n');   // bateria do fone
             foreach (var a in d.Usando)   // microfone: quem esta usando (versoes antigas ignoram a linha "U")
                 sb.Append("U\t").Append(T(d.Id)).Append('\t').Append(T(a.Exe)).Append('\t').Append(T(a.Nome)).Append('\n');
         }
@@ -8343,6 +8562,9 @@ class App : ApplicationContext
                     case "tocando_troca": { int n; if (int.TryParse(v, out n) && n >= 0 && n <= 120) TrocaMidiaSeg = n; } break;
                     case "bateria_pc": MostrarBateria = v == "1"; break;
                     case "uso_mic": UsoMic = v == "1"; break;
+                    case "bateria_fones": { int n; if (int.TryParse(v, out n) && n >= 0 && n <= 2) { BateriaMostrar = n != 0; if (n > 0) BateriaJeito = n; } } break;
+                    case "bateria_jeito": { int n; if (int.TryParse(v, out n) && n >= 1 && n <= 2) BateriaJeito = n; } break;
+                    case "aviso_bateria": AvisoBateria = v == "1"; break;
                     case "noite": Noite = v == "1"; break;
                     case "noite_estouro": NoiteEstouro = v == "1"; break;
                     case "noite_max": { int n; if (int.TryParse(v, out n) && n >= 5 && n <= 100) NoiteMax = n; } break;
@@ -8474,7 +8696,7 @@ class App : ApplicationContext
                 "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "nome_app=" + (MostrarNomeApp ? 1 : 0), "pausar_fone=" + string.Join(";", PausarAoTirarFone), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
-            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("tocando_topo=" + (MidiaNoTopo ? 1 : 0)); l.Add("tocando_mostrador=" + Mostrador); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("uso_mic=" + (UsoMic ? 1 : 0));
+            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("tocando_topo=" + (MidiaNoTopo ? 1 : 0)); l.Add("tocando_mostrador=" + Mostrador); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("uso_mic=" + (UsoMic ? 1 : 0)); l.Add("bateria_fones=" + BateriaModo); l.Add("bateria_jeito=" + BateriaJeito); l.Add("aviso_bateria=" + (AvisoBateria ? 1 : 0));
             l.Add("noite=" + (Noite ? 1 : 0)); l.Add("noite_estouro=" + (NoiteEstouro ? 1 : 0)); l.Add("noite_max=" + NoiteMax); l.Add("noite_horas=" + NoiteIni + "-" + NoiteFim); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
             l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0)); l.Add("atualizar=" + (AtualizarSozinho ? 1 : 0));
             l.Add("prioridade_auto=" + (PrioridadeAuto ? 1 : 0));
@@ -8892,6 +9114,27 @@ class Configuracoes : Form
             if (app.Mics)
                 Chave("Mostrar quem está usando o microfone", "Linha \"Usando agora\" no cartão do microfone, com o ícone de cada app que está captando a sua voz. Passe o mouse no ícone para ver o nome. Também do outro PC",
                     () => app.UsoMic, v => { app.UsoMic = v; Audio.ComUso = v; app.SalvarConfig(); app.PainelMudou(); });
+            sub = false;
+            Chave("Mostrar a bateria dos fones", "Do fone ou caixa Bluetooth que informa a bateria ao Windows. Também do outro PC",
+                () => app.BateriaMostrar, v => { app.BateriaMostrar = v; app.SalvarConfig(); app.PainelMudou(); });
+            sub = true;
+            if (app.BateriaFones)
+                Botao("Mostrar como", "Anel verde em volta do ícone do fone (a porcentagem aparece com o mouse no título) ou o número à direita",
+                    () => app.BateriaJeito == 2 ? "Porcentagem" : "Anel", r =>
+                    {
+                        var m = NovoMenu();
+                        foreach (var op0 in new[] { 1, 2 })
+                        {
+                            int op = op0;
+                            var it = new ToolStripMenuItem(op == 1 ? "Anel (padrão)" : "Porcentagem") { Checked = app.BateriaJeito == op };
+                            it.Click += (s2, e2) => { app.BateriaJeito = op; app.SalvarConfig(); app.PainelMudou(); Montar(); Invalidate(); };
+                            m.Items.Add(it);
+                        }
+                        MostrarMenu(m, r);
+                    });
+            if (app.BateriaFones)
+                Chave("Avisar com bateria fraca", "Uma notificação do Windows quando um fone conectado chegar a 15%",
+                    () => app.AvisoBateria, v => { app.AvisoBateria = v; app.SalvarConfig(); });
             sub = false;
             Chave("Mostrar apps em silêncio", "Mostra também os apps abertos que não estão tocando som agora", () => app.Inativos, v => app.Inativos = v);
             Chave("Mostrar o nome do adaptador", "Ex.: \"AMD High Definition Audio Device\" ao lado do nome de cada saída", () => app.MostrarAdaptador, v => app.MostrarAdaptador = v);
@@ -9587,10 +9830,11 @@ class Configuracoes : Form
             else
             {
                 char seta = l.Glifo == '' ? '' : '';
-                if (l.Glifo != '') TextRenderer.DrawText(g, seta.ToString(), fGlifoP, new Rectangle(r.Right - E(40), y, E(24), h), cFraco, TC | xf);
+                int offB = temFilhas ? E(44) : 0;   // com a seta de abrir/fechar, o valor fica a esquerda dela
+                if (l.Glifo != '') TextRenderer.DrawText(g, seta.ToString(), fGlifoP, new Rectangle(r.Right - E(40) - offB, y, E(24), h), cFraco, TC | xf);
                 string v = l.Valor();
                 if (v.Length > 0)
-                    TextRenderer.DrawText(g, v, fNormal, new Rectangle(r.Right - E(44) - dirW, y, dirW, h), cFraco,
+                    TextRenderer.DrawText(g, v, fNormal, new Rectangle(r.Right - E(44) - dirW - offB, y, dirW, h), cFraco,
                         TF & ~TextFormatFlags.Left | TextFormatFlags.Right | xf);
             }
             y += h + (grudaBaixo ? 0 : E(4));   // grudadas: viram um cartao so
