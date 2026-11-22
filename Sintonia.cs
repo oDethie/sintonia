@@ -16,6 +16,7 @@ using System.Text;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using Timer = System.Windows.Forms.Timer;
@@ -24,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.8.0.0")]
-[assembly: AssemblyFileVersion("1.8.0.0")]
+[assembly: AssemblyVersion("1.9.0.0")]
+[assembly: AssemblyFileVersion("1.9.0.0")]
 
 static class Program
 {
@@ -2235,11 +2236,13 @@ class Painel : Form
         if (estadoRemoto == null) return;
         var inv = System.Globalization.CultureInfo.InvariantCulture;
         var porId = new Dictionary<string, Disp>();
+        bateriaPct = -1;
         foreach (var l in estadoRemoto.Split('\n'))
         {
             var c = l.Split('\t');
             try
             {
+                if (c[0] == "B" && c.Length >= 3) { bateriaPct = int.Parse(c[1]); bateriaCarregando = c[2] == "1"; continue; }
                 if (c[0] == "D" && c.Length >= 8)
                 {
                     var d = new Disp { Fluxo = int.Parse(c[1]), Id = c[2], NomeOriginal = c[3], Forma = int.Parse(c[4]), Padrao = c[5] == "1",
@@ -2319,6 +2322,7 @@ class Painel : Form
             if (++ticks % 4 == 0) Recarregar(); else AtualizarValores();
         };
         tAnim.Tick += (s, e) => PassoAnimacao();
+        tMidia.Tick += (s, e) => PassoMidia();
         tSom.Tick += (s, e) => PassoSom();
     }
 
@@ -2499,6 +2503,10 @@ class Painel : Form
         SetForegroundWindow(Handle);
         Activate();
         tRecarregar.Start();
+        pcLigado.Clear();
+        ConferirLigados();
+        midiaLocal = null; midiaRemota = null; lendoMidia = false;
+        if (app.TocandoAgora) { tMidia.Start(); PassoMidia(); }
         if (!app.LembrarPc) Alvo = null;
         else if (Alvo == null && !string.IsNullOrEmpty(app.UltimoPc) && app.Controlador) Alvo = app.ParPorId(app.UltimoPc);
         pcPos = -1f;
@@ -2565,6 +2573,16 @@ class Painel : Form
     bool pedindoNiveis, semNiveis; DateTime ultimoNiveis;
     // atualizar o outro PC a distancia
     string atualizandoPc; DateTime atualizandoDesde;
+    // bateria do outro PC (-1 = sem bateria ou versao antiga)
+    int bateriaPct = -1; bool bateriaCarregando;
+    // ligado/desligado dos outros PCs (conferido uma vez ao abrir o painel)
+    readonly Dictionary<string, bool> pcLigado = new Dictionary<string, bool>();
+    // tocando agora
+    Midia.Info midiaLocal, midiaRemota;
+    Bitmap capaLocal; string capaChave;
+    bool lendoMidia;
+    readonly Timer tMidia = new Timer { Interval = 1500 };
+    const int Z_MIDIA_ANT = 30, Z_MIDIA_TOCAR = 31, Z_MIDIA_PROX = 32;
     Timer tAtualizandoPc;   // semNiveis: o outro PC e de uma versao que nao manda os niveis
     const int BARRAS = 5;
 
@@ -2643,6 +2661,176 @@ class Painel : Form
             }
         }
         finally { if (g != null) g.Dispose(); }
+    }
+
+    int EstadoPc(ParPC pc)
+    {
+        if (pc == null) return -1;
+        if (Alvo != null && Alvo.Id == pc.Id)
+        {
+            if (estadoRemoto != null && !remotoFalhou) return 1;
+            if (remotoFalhou) return 0;
+        }
+        bool v;
+        return pcLigado.TryGetValue(pc.Id, out v) ? (v ? 1 : 0) : -1;
+    }
+
+    // ao abrir o painel: uma tentativa rapida de conexao em cada PC pareado (so abre e fecha, nao manda nada)
+    void ConferirLigados()
+    {
+        if (!app.Controlador) return;
+        foreach (var pc0 in app.Controlados())
+        {
+            var pc = pc0;
+            if (string.IsNullOrEmpty(pc.UltimoIP)) continue;
+            string ip = pc.UltimoIP;
+            new Thread(() =>
+            {
+                bool ok = false;
+                try
+                {
+                    using (var c = new TcpClient())
+                    {
+                        var r = c.BeginConnect(IPAddress.Parse(ip), Rede.PortaTcp, null, null);
+                        ok = r.AsyncWaitHandle.WaitOne(600) && c.Connected;
+                    }
+                }
+                catch { }
+                try { BeginInvoke(new Action(() => { pcLigado[pc.Id] = ok; Invalidate(); })); } catch { }
+            }) { IsBackground = true, Priority = ThreadPriority.BelowNormal }.Start();
+        }
+    }
+
+    // ---- tocando agora ----
+    void PassoMidia()
+    {
+        if (!Visible || !app.TocandoAgora) { tMidia.Stop(); return; }
+        if (lendoMidia) return;
+        lendoMidia = true;
+        if (Alvo != null)
+        {
+            GarantirRemoto();
+            var alvo = Alvo;
+            remoto.Pedir("midia", r =>
+            {
+                lendoMidia = false;
+                if (alvo != Alvo || r == null) return;
+                Midia.Info mi = null;
+                var c = r.Split('\t');
+                if (r.Length > 0 && c.Length >= 4) mi = new Midia.Info { Titulo = c[0], Artista = c[1], App = c[2], Tocando = c[3] == "1" };
+                AplicarMidia(ref midiaRemota, mi);
+            });
+            return;
+        }
+        string chaveAtual = capaChave;
+        new Thread(() =>
+        {
+            Midia.Info mi = null;
+            try
+            {
+                mi = Midia.Ler(false);
+                if (mi != null && (mi.Titulo + "|" + mi.Artista) != chaveAtual) { var mc = Midia.Ler(true); if (mc != null) mi = mc; }
+            }
+            catch { mi = null; }
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    lendoMidia = false;
+                    if (mi != null && mi.Capa != null)
+                    {
+                        try { using (var ms = new MemoryStream(mi.Capa)) using (var im = Image.FromStream(ms)) { if (capaLocal != null) capaLocal.Dispose(); capaLocal = new Bitmap(im, E(38), E(38)); } capaChave = mi.Titulo + "|" + mi.Artista; }
+                        catch { }
+                    }
+                    else if (mi != null && (mi.Titulo + "|" + mi.Artista) != capaChave) { if (capaLocal != null) capaLocal.Dispose(); capaLocal = null; capaChave = mi.Titulo + "|" + mi.Artista; }
+                    AplicarMidia(ref midiaLocal, mi);
+                }));
+            }
+            catch { lendoMidia = false; }
+        }) { IsBackground = true, Priority = ThreadPriority.BelowNormal }.Start();
+    }
+
+    void AplicarMidia(ref Midia.Info atual, Midia.Info nova)
+    {
+        bool antes = atual != null, depois = nova != null;
+        bool mudou = antes != depois || (antes && (atual.Titulo != nova.Titulo || atual.Artista != nova.Artista || atual.Tocando != nova.Tocando || atual.App != nova.App));
+        atual = nova;
+        if (!mudou) return;
+        if (antes != depois) { Montar(null); Posicionar(); }   // o cartao apareceu/sumiu: ajusta a altura
+        Invalidate();
+    }
+
+    void ComandoMidia(string cmd)
+    {
+        if (Alvo != null)
+        {
+            EnviarRemoto("midia", "midia_cmd\t" + cmd, false);
+            var t = new Timer { Interval = 500 };
+            t.Tick += (s2, e2) => { t.Stop(); t.Dispose(); PassoMidia(); };
+            t.Start();
+            return;
+        }
+        new Thread(() =>
+        {
+            try { Midia.Comando(cmd); } catch { }
+            Thread.Sleep(350);
+            try { BeginInvoke(new Action(PassoMidia)); } catch { }
+        }) { IsBackground = true }.Start();
+    }
+
+    int CartaoMidia(Graphics g, int y, int pad, int W)
+    {
+        var mi = Alvo == null ? midiaLocal : midiaRemota;
+        if (!app.TocandoAgora || mi == null) return y;
+        string app0 = Midia.NomeApp(mi.App);
+        string titulo = string.IsNullOrEmpty(mi.Titulo) ? (app0.Length > 0 ? app0 : "Tocando agora") : mi.Titulo;
+        string estado = mi.Tocando ? "Tocando" : "Pausado";
+        string linha2 = string.IsNullOrEmpty(mi.Titulo)
+            ? (string.IsNullOrEmpty(mi.Artista) ? estado : mi.Artista)                      // sem titulo: o app ja esta no titulo
+            : (string.IsNullOrEmpty(mi.Artista) ? (app0.Length > 0 ? app0 : estado) : (app0.Length > 0 ? mi.Artista + "  ·  " + app0 : mi.Artista));
+        y += E(6);
+        var rc = new Rectangle(pad, y, W - pad * 2, E(58));
+        int bw = E(32);
+        var rProx = new Rectangle(rc.Right - E(8) - bw, rc.Y + (rc.Height - bw) / 2, bw, bw);
+        var rTocar = new Rectangle(rProx.X - bw - E(2), rProx.Y, bw, bw);
+        var rAnt = new Rectangle(rTocar.X - bw - E(2), rProx.Y, bw, bw);
+        zonas.Add(new Zona { R = rAnt, Tipo = Z_MIDIA_ANT });
+        zonas.Add(new Zona { R = rTocar, Tipo = Z_MIDIA_TOCAR });
+        zonas.Add(new Zona { R = rProx, Tipo = Z_MIDIA_PROX });
+        if (g != null)
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var p = Desenho.Arred(new RectangleF(rc.X + 0.5f, rc.Y + 0.5f, rc.Width - 1, rc.Height - 1), E(8)))
+            {
+                using (var b = new SolidBrush(cCartao)) g.FillPath(b, p);
+                using (var pn = new Pen(cBorda)) g.DrawPath(pn, p);
+            }
+            var rArte = new Rectangle(rc.X + E(10), rc.Y + (rc.Height - E(38)) / 2, E(38), E(38));
+            Bitmap capa = Alvo == null ? capaLocal : null;
+            if (capa != null)
+            {
+                using (var pth = Desenho.Arred(new RectangleF(rArte.X, rArte.Y, rArte.Width, rArte.Height), E(5)))
+                {
+                    var est = g.Save(); g.SetClip(pth, CombineMode.Intersect); g.DrawImage(capa, rArte); g.Restore(est);
+                }
+            }
+            else
+            {
+                using (var pth = Desenho.Arred(new RectangleF(rArte.X, rArte.Y, rArte.Width, rArte.Height), E(5))) using (var b = new SolidBrush(cHover)) g.FillPath(b, pth);
+                TextRenderer.DrawText(g, "\uE8D6", fGlifo, rArte, cFraco, TC);
+            }
+            g.SmoothingMode = SmoothingMode.None;
+            int tx = rArte.Right + E(10), twm = rAnt.X - E(6) - tx;
+            TextRenderer.DrawText(g, titulo, fNormal, new Rectangle(tx, rc.Y + E(10), twm, E(20)), cTexto, TF);
+            if (linha2.Length > 0) TextRenderer.DrawText(g, linha2, fPequena, new Rectangle(tx, rc.Y + E(31), twm, E(18)), cFraco, TF);
+            foreach (var kv in new[] { new KeyValuePair<Rectangle, int>(rAnt, Z_MIDIA_ANT), new KeyValuePair<Rectangle, int>(rTocar, Z_MIDIA_TOCAR), new KeyValuePair<Rectangle, int>(rProx, Z_MIDIA_PROX) })
+            {
+                if (sobre != null && sobre.Tipo == kv.Value) Fundo(g, kv.Key, cHover, E(5));
+                string gl = kv.Value == Z_MIDIA_ANT ? "\uE892" : kv.Value == Z_MIDIA_PROX ? "\uE893" : (mi.Tocando ? "\uE769" : "\uE768");
+                TextRenderer.DrawText(g, gl, kv.Value == Z_MIDIA_TOCAR ? fGlifo : fGlifoP, kv.Key, cTexto, TC);
+            }
+        }
+        return rc.Bottom + E(2);
     }
 
     static bool Atrasada(ParPC pc)
@@ -2732,6 +2920,7 @@ class Painel : Form
         tSom.Stop();
         historico.Clear();
         niveisRemotos.Clear(); pedindoNiveis = false; semNiveis = false;
+        tMidia.Stop(); lendoMidia = false;
         if (remoto != null) { remoto.Fechar(); remoto = null; }   // fechou o painel: desconecta do outro PC
         pedindoEstado = false; pendentes.Clear(); enviando.Clear();
         fechando = false;
@@ -2948,6 +3137,30 @@ class Painel : Form
             TextRenderer.DrawText(g, "Sintonia", fTitulo, rTit, cTexto, TF);
             if (sub.Length > 0)
                 TextRenderer.DrawText(g, sub, fNormal, new Rectangle(rTit.X + tw, rTit.Y, rTit.Width - tw, rTit.Height), cFraco, TF);
+            if (Alvo != null && app.MostrarBateria && bateriaPct >= 0)
+            {
+                // bateria do outro PC: icone desenhado + porcentagem (raio quando carregando)
+                int swd = TextRenderer.MeasureText(g, sub, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width;
+                int bx = rTit.X + tw + swd + E(10), cy = rTit.Y + rTit.Height / 2;
+                bool fraca = bateriaPct <= 20 && !bateriaCarregando;
+                Color cb = fraca ? Color.FromArgb(220, 70, 60) : cFraco;
+                if (bx + E(60) < rTit.Right)
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    var rc = new RectangleF(bx, cy - E(4), E(16), E(8));
+                    using (var pn = new Pen(cb, Math.Max(1f, E(1.2f)))) using (var pth = Desenho.Arred(rc, E(1.5f))) g.DrawPath(pn, pth);
+                    using (var b = new SolidBrush(cb))
+                    {
+                        g.FillRectangle(b, rc.Right + E(0.5f), cy - E(1.5f), E(1.5f), E(3));
+                        float wf = Math.Max(E(1), (rc.Width - E(3)) * bateriaPct / 100f);
+                        g.FillRectangle(b, rc.X + E(1.5f), rc.Y + E(1.5f), wf, rc.Height - E(3));
+                    }
+                    g.SmoothingMode = SmoothingMode.None;
+                    int tx = bx + E(22);
+                    if (bateriaCarregando) { TextRenderer.DrawText(g, "\uE945", fGlifoP, new Rectangle(tx - E(2), rTit.Y, E(14), rTit.Height), cb, TC); tx += E(12); }
+                    TextRenderer.DrawText(g, bateriaPct + "%", fNormal, new Rectangle(tx, rTit.Y, E(50), rTit.Height), cb, TF);
+                }
+            }
             if (Sobre(Z_MENU, null, null, null)) Fundo(g, rMenu, cHover, E(4));
             TextRenderer.DrawText(g, "\uE713", fGlifo, rMenu, cTexto, TC);
             // prioridade das saidas: em destaque quando a troca automatica esta ligada
@@ -3032,8 +3245,21 @@ class Painel : Form
                     g.SmoothingMode = SmoothingMode.None;
                 }
                 char gl = pc == null ? '\uE7F4' : atualizandoEste ? '\uE895' : '\uE7F8';
-                TextRenderer.DrawText(g, gl.ToString(), fGlifoP, new Rectangle(x0, r.Y, E(16), r.Height), ativo ? cTexto : cFraco, TC);
-                TextRenderer.DrawText(g, txt, fT, new Rectangle(x0 + E(24), r.Y, tw + E(2), r.Height), ativo ? cTexto : cFraco, TF);
+                int ligado = EstadoPc(pc);     // 1 ligado, 0 desligado, -1 nao sabe
+                Color cTxt = ativo ? cTexto : cFraco;
+                if (ligado == 0 && !atualizandoEste) cTxt = Color.FromArgb(110, cFraco);
+                TextRenderer.DrawText(g, gl.ToString(), fGlifoP, new Rectangle(x0, r.Y, E(16), r.Height), cTxt, TC);
+                TextRenderer.DrawText(g, txt, fT, new Rectangle(x0 + E(24), r.Y, tw + E(2), r.Height), cTxt, TF);
+                if (ligado == 1 && !atualizandoEste)
+                {
+                    // bolinha verde no cantinho do icone: ligado
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    float dv = E(6), cxv = x0 + E(13), cyv = r.Y + r.Height / 2 + E(4);
+                    Color fundoSeg = ativo ? (app.TemaEscuro() ? Color.FromArgb(62, 62, 62) : Color.White) : cCartao;
+                    using (var b = new SolidBrush(fundoSeg)) g.FillEllipse(b, cxv - dv / 2 - E(1.5f), cyv - dv / 2 - E(1.5f), dv + E(3), dv + E(3));
+                    using (var b = new SolidBrush(Color.FromArgb(46, 160, 67))) g.FillEllipse(b, cxv - dv / 2, cyv - dv / 2, dv, dv);
+                    g.SmoothingMode = SmoothingMode.None;
+                }
                 if (pc != null && !atualizandoEste && Atrasada(pc))
                 {
                     // bolinha amarela: versao mais antiga que a deste PC
@@ -3147,6 +3373,7 @@ class Painel : Form
             y = Secao(g, "Entrada", y, pad, W, 1);
             y = Corpo(g, 1, y, pad, W);
         }
+        y = CartaoMidia(g, y, pad, W);
         y += pad - E(8);
         alturaConteudo = y + rolagem;
     }
@@ -4022,6 +4249,8 @@ class Painel : Form
                     if (remoto != null) { remoto.Fechar(); remoto = null; }
                     Alvo = novo; estadoRemoto = null; remotoFalhou = false; pedindoEstado = false; pendentes.Clear(); enviando.Clear();
                     niveisRemotos.Clear(); pedindoNiveis = false; semNiveis = false; historico.Clear();
+                    midiaRemota = null; bateriaPct = -1; lendoMidia = false;
+                    if (app.TocandoAgora) { if (!tMidia.Enabled) tMidia.Start(); }
                     abertura.Clear(); rolagem = 0;
                     int para = IndiceAlvo();
                     app.UltimoPc = Alvo != null ? Alvo.Id : ""; app.SalvarConfig();
@@ -4061,6 +4290,15 @@ class Painel : Form
                 app.AbrirConfiguracoes();
                 app.AfastarConfig(Bounds);
                 break;
+            case Z_MIDIA_ANT: ComandoMidia("anterior"); break;
+            case Z_MIDIA_TOCAR:
+                {
+                    var mi = Alvo == null ? midiaLocal : midiaRemota;
+                    if (mi != null) { mi.Tocando = !mi.Tocando; Invalidate(); }   // resposta imediata no botao
+                    ComandoMidia("tocar");
+                }
+                break;
+            case Z_MIDIA_PROX: ComandoMidia("proxima"); break;
             case Z_PRIORIDADE:
                 app.AbrirConfiguracoes(5);
                 app.AfastarConfig(Bounds);
@@ -5054,6 +5292,108 @@ class Remoto
 }
 
 // =====================================================================
+//  Tocando agora: musica/video atual pelo recurso de midia do Windows (sem referencias extras)
+//  so e consultado com o painel aberto e a opcao ligada
+// =====================================================================
+static class Midia
+{
+    public class Info { public string Titulo, Artista, App; public bool Tocando; public byte[] Capa; }
+
+    static MethodInfo asTaskGen, asStream;
+    static Type tGer, tSes, tProps, tPlay, tRef, tStream;
+    static object gerente;
+
+    static Type T(string nome, string ns) { return Type.GetType(nome + ", " + ns + ", ContentType=WindowsRuntime", true); }
+
+    static void Preparar()
+    {
+        if (asTaskGen != null) return;
+        var rt = Assembly.Load("System.Runtime.WindowsRuntime, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
+        foreach (var m in rt.GetType("System.WindowsRuntimeSystemExtensions").GetMethods())
+            if (m.Name == "AsTask" && m.IsGenericMethodDefinition && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.Name == "IAsyncOperation`1") asTaskGen = m;
+        foreach (var m in rt.GetType("System.IO.WindowsRuntimeStreamExtensions").GetMethods())
+            if (m.Name == "AsStreamForRead" && m.GetParameters().Length == 1) asStream = m;
+        const string c = "Windows.Media.Control";
+        tGer = T(c + ".GlobalSystemMediaTransportControlsSessionManager", c);
+        tSes = T(c + ".GlobalSystemMediaTransportControlsSession", c);
+        tProps = T(c + ".GlobalSystemMediaTransportControlsSessionMediaProperties", c);
+        tPlay = T(c + ".GlobalSystemMediaTransportControlsSessionPlaybackInfo", c);
+        tRef = T("Windows.Storage.Streams.IRandomAccessStreamReference", "Windows.Storage.Streams");
+        tStream = T("Windows.Storage.Streams.IRandomAccessStreamWithContentType", "Windows.Storage.Streams");
+    }
+
+    static object Esperar(object op, Type t, int ms)
+    {
+        if (op == null) return null;
+        var task = (Task)asTaskGen.MakeGenericMethod(t).Invoke(null, new[] { op });
+        if (!task.Wait(ms)) return null;
+        return task.GetType().GetProperty("Result").GetValue(task, null);
+    }
+
+    static object Chamar(Type t, object o, string nome) { return t.GetMethod(nome, Type.EmptyTypes).Invoke(o, null); }
+    static object Prop(Type t, object o, string nome) { return t.GetProperty(nome).GetValue(o, null); }
+
+    static object Sessao()
+    {
+        Preparar();
+        if (gerente == null) gerente = Esperar(tGer.GetMethod("RequestAsync").Invoke(null, null), tGer, 3000);
+        return gerente == null ? null : Chamar(tGer, gerente, "GetCurrentSession");
+    }
+
+    public static Info Ler(bool comCapa)
+    {
+        var s = Sessao();
+        if (s == null) return null;
+        var props = Esperar(Chamar(tSes, s, "TryGetMediaPropertiesAsync"), tProps, 2000);
+        if (props == null) return null;
+        var info = new Info { Titulo = (string)Prop(tProps, props, "Title"), Artista = (string)Prop(tProps, props, "Artist"), App = (string)Prop(tSes, s, "SourceAppUserModelId") };
+        var pb = Chamar(tSes, s, "GetPlaybackInfo");
+        info.Tocando = Convert.ToInt32(Prop(tPlay, pb, "PlaybackStatus")) == 4;
+        if (comCapa)
+        {
+            var th = Prop(tProps, props, "Thumbnail");
+            if (th != null)
+            {
+                var st = Esperar(Chamar(tRef, th, "OpenReadAsync"), tStream, 2000);
+                if (st != null)
+                    using (var net = (Stream)asStream.Invoke(null, new[] { st }))
+                    using (var ms = new MemoryStream()) { net.CopyTo(ms); info.Capa = ms.ToArray(); }
+            }
+        }
+        return info;
+    }
+
+    // "tocar" / "proxima" / "anterior"
+    public static bool Comando(string c)
+    {
+        var s = Sessao();
+        if (s == null) return false;
+        string m = c == "proxima" ? "TrySkipNextAsync" : c == "anterior" ? "TrySkipPreviousAsync" : "TryTogglePlayPauseAsync";
+        var r = Esperar(Chamar(tSes, s, m), typeof(bool), 2000);
+        return r is bool && (bool)r;
+    }
+
+    // nome curto do app que esta tocando (ex.: "Spotify.exe" -> "Spotify")
+    public static string NomeApp(string aumid)
+    {
+        if (string.IsNullOrEmpty(aumid)) return "";
+        string n = aumid;
+        int k = n.LastIndexOf('!'); if (k >= 0) n = n.Substring(k + 1);
+        if (n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) n = n.Substring(0, n.Length - 4);
+        k = n.LastIndexOf('.'); if (k >= 0 && k < n.Length - 1) n = n.Substring(k + 1);
+        switch (n.ToLowerInvariant())
+        {
+            case "msedge": return "Edge";
+            case "chrome": return "Chrome";
+            case "firefox": return "Firefox";
+            case "zunemusic": return "Reprodutor Multimídia";
+            case "spotify": return "Spotify";
+        }
+        return n.Length > 0 ? char.ToUpper(n[0]) + n.Substring(1) : n;
+    }
+}
+
+// =====================================================================
 //  Som de teste: um "plim" curto tocado so na saida escolhida
 // =====================================================================
 static class SomTeste
@@ -5347,7 +5687,9 @@ class App : ApplicationContext
     // ---- outros PCs (controle pela rede) ----
     public bool Controlador;                 // este PC controla outros (padrao: desligado)
     public bool AtualizarSozinho = true;
-    public bool LembrarPc = true;     // o painel abre no ultimo PC visto (inclusive depois de reiniciar)
+    public bool LembrarPc = true;
+    public bool TocandoAgora;          // cartao "Tocando agora" no painel (padrao: desligado)
+    public bool MostrarBateria = true; // bateria do outro PC no titulo     // o painel abre no ultimo PC visto (inclusive depois de reiniciar)
     public string UltimoPc;
     // prioridade: lista ordenada de aparelhos (saidas e microfones), incluindo os desconectados
     public bool PrioridadeAuto;
@@ -6526,7 +6868,21 @@ class App : ApplicationContext
             switch (c[0])
             {
                 case "estado":
-                    return EstadoTexto(ListaRemota(true));
+                    {
+                        string e = EstadoTexto(ListaRemota(true));
+                        var ps = SystemInformation.PowerStatus;   // bateria (notebook): "B<tab>64<tab>1"
+                        if (ps.BatteryChargeStatus != BatteryChargeStatus.NoSystemBattery && ps.BatteryChargeStatus != BatteryChargeStatus.Unknown && ps.BatteryLifePercent <= 1f)
+                            e += "B\t" + (int)Math.Round(ps.BatteryLifePercent * 100) + "\t" + (ps.PowerLineStatus == PowerLineStatus.Online ? 1 : 0) + "\n";
+                        return e;
+                    }
+                case "midia":
+                    {
+                        var mi = Midia.Ler(false);
+                        if (mi == null) return "";
+                        return T(mi.Titulo) + "\t" + T(mi.Artista) + "\t" + T(mi.App) + "\t" + (mi.Tocando ? 1 : 0);
+                    }
+                case "midia_cmd":
+                    return Midia.Comando(c[1]) ? "ok" : "nao";
                 case "icone":
                     {
                         foreach (var d in ListaRemota(false))
@@ -7047,6 +7403,8 @@ class App : ApplicationContext
                     case "fixar": FixarBandeja = v == "1"; break;
                     case "controlador": Controlador = v == "1"; break;
                     case "lembrar_pc": LembrarPc = v == "1"; break;
+                    case "tocando": TocandoAgora = v == "1"; break;
+                    case "bateria_pc": MostrarBateria = v == "1"; break;
                     case "ultimo_pc": UltimoPc = v; break;
                     case "atualizar": AtualizarSozinho = v == "1"; break;
                     case "prioridade_auto": PrioridadeAuto = v == "1"; break;
@@ -7169,7 +7527,7 @@ class App : ApplicationContext
                 "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
-            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
+            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
             l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0)); l.Add("atualizar=" + (AtualizarSozinho ? 1 : 0));
             l.Add("prioridade_auto=" + (PrioridadeAuto ? 1 : 0));
             l.Add("prio0=" + string.Join(";", Prioridade[0])); l.Add("prio1=" + string.Join(";", Prioridade[1]));
@@ -7547,6 +7905,8 @@ class Configuracoes : Form
             Chave("Mostrar o logo no topo do painel", "O ícone roxo do Sintonia ao lado do nome, no cabeçalho do painel", () => app.MostrarLogo, v => app.MostrarLogo = v);
             Chave("Mostrar o som tocando", "Barrinhas animadas ao lado de cada saída e app, conforme o som que está tocando. Só funciona com o painel aberto",
                 () => app.MostrarSom, v => app.DefinirSom(v));
+            Chave("Tocando agora", "Cartão no fim do painel com a música ou vídeo que está tocando (Spotify, YouTube…) e os botões anterior, tocar/pausar e próxima. Também do outro PC",
+                () => app.TocandoAgora, v => { app.TocandoAgora = v; app.SalvarConfig(); app.PainelMudou(); });
             Botao("Altura máxima do painel", "Até onde o painel cresce. Passando disso, a lista rola com a roda do mouse",
                 () => app.AlturaMax == 100 ? "Tela toda" : app.AlturaMax + "% da tela", r =>
             {
@@ -7742,6 +8102,9 @@ class Configuracoes : Form
                  "com tudo criptografado, e só depois de parear com um código. Nada é enviado no dia a dia: só quando o painel mostra o outro PC.");
             Cab("Este PC");
             Chave("Controlar outros PCs", "Mostra no painel um botão para cada PC pareado, para mudar o som dele daqui", () => app.Controlador, v => app.DefinirControlador(v));
+            if (app.Controlador)
+                Chave("Mostrar a bateria do outro PC", "No título do painel, ao lado do nome do PC (só se ele tiver bateria)",
+                    () => app.MostrarBateria, v => { app.MostrarBateria = v; app.SalvarConfig(); app.PainelMudou(); });
             if (app.Controlador)
                 Chave("Abrir no último PC visto", "O painel abre direto no PC que você estava vendo. Desligado, abre sempre em \"Este PC\". Tab ou Ctrl+1, 2, 3 trocam de PC com o painel aberto",
                     () => app.LembrarPc, v => { app.LembrarPc = v; app.SalvarConfig(); });

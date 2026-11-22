@@ -26,6 +26,7 @@ O controle de volume do Windows esconde o que mais importa: trocar a saída (fon
 - **Organize do seu jeito:** arraste as saídas para mudar a ordem, recolha/expanda com a setinha, renomeie ("Fone", "Caixa", "Monitor") e esconda o que não usa (o olhinho mostra os escondidos).
 - **Perfis** (opcional, até 10): guardam a saída padrão, o microfone, a saída e o volume de cada app e como o painel está. Troque pela lista **Perfil** no painel (abre ali mesmo, com o ativo marcado; arraste para mudar a ordem), pelo menu do ícone ou por atalho. Podem **ativar sozinhos** quando um app (ex.: um jogo) começa a tocar e voltar ao anterior quando ele fecha.
 - **Prioridade de saídas e microfones** (opcional): você ordena os aparelhos (arrastando) e, quando um conecta ou desconecta (ex.: fone Bluetooth), o Sintonia passa a usar o primeiro da lista que estiver conectado. Troca feita à mão fica valendo até um aparelho entrar ou sair. Abre pelo ícone ⇅ ao lado da engrenagem.
+- **Tocando agora** (opcional, vem desligado): cartão no fim do painel com a música ou vídeo atual (Spotify, YouTube…) e os botões anterior, tocar/pausar e próxima. Na aba do outro PC, mostra e controla a música de lá. Só é consultado com o painel aberto.
 - **Som de teste:** o ▶ abaixo da setinha de cada saída toca um "plim" curto só naquele aparelho (funciona também no controle de outro PC).
 - **Atalhos de teclado** configuráveis (vêm vazios; escolha os seus): abrir o painel, próxima saída, mudo geral e um por perfil.
 - **Aviso na tela** discreto ao usar os atalhos (não aparece por cima de jogos em tela cheia).
@@ -84,6 +85,8 @@ No PC que está sendo controlado, o ícone do Sintonia perto do relógio ganha u
 - Tudo vai **criptografado** (AES-256 + HMAC-SHA256). Mensagens alteradas ou repetidas são recusadas.
 - O PC controlado só aceita mudar volume, mudo, saída padrão e saída de apps. Não abre arquivos, não roda programas, não lê nada além da lista de som.
 - O teste do protocolo pode ser rodado por qualquer um: `Sintonia.exe --testerede resultado.txt`.
+
+**Ligado ou desligado:** ao abrir o painel, o Sintonia confere uma vez cada PC pareado. Ligado ganha uma bolinha verde no ícone; desligado fica apagado. **Bateria:** se o outro PC tiver bateria, ela aparece no título do painel na aba dele (desligável).
 
 **No painel:** **Tab** (ou **Ctrl+1, 2, 3**) troca entre os PCs; o painel abre no último PC visto (desligável). O botão do PC mostra o sinal da conexão (3 tracinhos = ótima) e o clique direito mostra o tempo de resposta. Com "Mostrar o som tocando" ligado, as barrinhas aparecem também no microfone do outro PC quando algum app está usando o mic.
 
