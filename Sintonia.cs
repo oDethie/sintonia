@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.7.0")]
-[assembly: AssemblyFileVersion("1.9.7.0")]
+[assembly: AssemblyVersion("1.9.8.0")]
+[assembly: AssemblyFileVersion("1.9.8.0")]
 
 static class Program
 {
@@ -2397,7 +2397,7 @@ class Painel : Form
             if (Math.Abs(alvoP - fpa) < 0.02f) fpa = alvoP;
             partesAnim[k] = fpa; layout = true;
         }
-        float alvoM = app.MidiaAberto ? 1f : 0f;
+        float alvoM = 1f;
         if (midiaAb != alvoM)
         {
             midiaAb += (alvoM - midiaAb) * 0.28f;
@@ -2520,7 +2520,7 @@ class Painel : Form
         ConferirLigados();
         midiasLocais = new List<Midia.Info>(); midiasRemotas = new List<Midia.Info>(); lendoMidia = false; remotoSoUma = false; arrastoMidia = false; midiaDesl = 0;
         ultimaTrocaMidia = DateTime.Now;
-        midiaAb = app.MidiaAberto ? 1f : 0f;
+        midiaAb = 1f;
         if (app.TocandoAgora) { tMidia.Start(); PassoMidia(); }
         if (!app.LembrarPc) Alvo = null;
         else if (Alvo == null && !string.IsNullOrEmpty(app.UltimoPc) && app.Controlador) Alvo = app.ParPorId(app.UltimoPc);
@@ -2910,7 +2910,7 @@ class Painel : Form
         int hTotal = E(12) + E(28) + hCartao + E(2);
         int yNatural = y;
         int yFixo = ClientSize.Height - hTotal - (E(12) - E(8));
-        bool fixo = yFixo < yNatural && yFixo > E(80);
+        bool fixo = app.MidiaFixo && yFixo < yNatural && yFixo > E(80);
         yRodape = fixo ? yFixo : int.MaxValue;
         if (fixo)
         {
@@ -2928,20 +2928,15 @@ class Painel : Form
         y += E(12);
         // titulo da secao + setinha de abrir/fechar (como nos cartoes das saidas)
         var rSeta = new Rectangle(W - pad - E(36), y - E(6), E(32), E(32));
-        zonas.Add(new Zona { R = new Rectangle(pad, y - E(6), W - pad * 2, E(32)), Tipo = Z_MIDIA_RECOLHER });
+        zonas.Add(new Zona { R = rSeta, Tipo = Z_MIDIA_RECOLHER });
         if (g != null)
         {
             bool hvT = sobre != null && sobre.Tipo == Z_MIDIA_RECOLHER;
             if (hvT) Fundo(g, rSeta, cHover, E(5));
             TextRenderer.DrawText(g, "Tocando agora", fNegrito, new Rectangle(pad + E(4), y, W - pad * 2 - E(40), E(22)), cTexto, TF);
-            // a setinha gira junto com a animacao
-            var est0 = g.Save();
-            g.TranslateTransform(rSeta.X + rSeta.Width / 2f, rSeta.Y + rSeta.Height / 2f);
-            g.RotateTransform(180f * (1f - ab));
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var pn = new Pen(hvT ? cTexto : cFraco, Math.Max(1f, E(1.3f))) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
-                g.DrawLines(pn, new[] { new PointF(-E(4.5f), E(2.2f)), new PointF(0, -E(2.2f)), new PointF(E(4.5f), E(2.2f)) });
-            g.Restore(est0);
+            // alfinete: fixado = preso no rodape (em destaque); desafixado = rola junto com a lista
+            TextRenderer.DrawText(g, app.MidiaFixo ? "\uE842" : "\uE718", fGlifoP, rSeta,
+                app.MidiaFixo ? cTexto : (hvT ? cTexto : cFraco), TC);
         }
         y += E(28);
         var rc = new Rectangle(pad, y, W - pad * 2, hCartao);
@@ -4492,9 +4487,9 @@ class Painel : Form
                 app.AfastarConfig(Bounds);
                 break;
             case Z_MIDIA_RECOLHER:
-                app.MidiaAberto = !app.MidiaAberto; app.SalvarConfig();
-                if (app.Animacoes) Animar();
-                else { midiaAb = app.MidiaAberto ? 1f : 0f; Montar(null); Posicionar(); Invalidate(); }
+                // fixar/desafixar no rodape
+                app.MidiaFixo = !app.MidiaFixo; app.SalvarConfig();
+                Montar(null); Posicionar(); AtualizarSobre(); Invalidate();
                 break;
             case Z_MIDIA_ANT: ComandoMidia("anterior"); break;
             case Z_MIDIA_TOCAR:
@@ -5969,7 +5964,8 @@ class App : ApplicationContext
     public bool LembrarPc = true;
     public bool TocandoAgora;          // cartao "Tocando agora" no painel (padrao: desligado)
     public int TrocaMidiaSeg = 10;
-    public bool MidiaAberto = true;    // "Tocando agora" aberto ou como mini player     // com varias tocando, passa para a proxima sozinho a cada N s (0 = nao troca)
+    public bool MidiaAberto = true;    // (antigo) sempre aberto
+    public bool MidiaFixo = true;      // "Tocando agora" preso no rodape quando a lista rola     // com varias tocando, passa para a proxima sozinho a cada N s (0 = nao troca)
     public bool MostrarBateria = true; // bateria do outro PC no titulo     // o painel abre no ultimo PC visto (inclusive depois de reiniciar)
     public string UltimoPc;
     // prioridade: lista ordenada de aparelhos (saidas e microfones), incluindo os desconectados
@@ -7692,7 +7688,8 @@ class App : ApplicationContext
                     case "controlador": Controlador = v == "1"; break;
                     case "lembrar_pc": LembrarPc = v == "1"; break;
                     case "tocando": TocandoAgora = v == "1"; break;
-                    case "tocando_aberto": MidiaAberto = v == "1"; break;
+                    case "tocando_aberto": break;
+                    case "tocando_fixo": MidiaFixo = v == "1"; break;
                     case "tocando_troca": { int n; if (int.TryParse(v, out n) && n >= 0 && n <= 120) TrocaMidiaSeg = n; } break;
                     case "bateria_pc": MostrarBateria = v == "1"; break;
                     case "ultimo_pc": UltimoPc = v; break;
@@ -7817,7 +7814,7 @@ class App : ApplicationContext
                 "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
-            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_aberto=" + (MidiaAberto ? 1 : 0)); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
+            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
             l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0)); l.Add("atualizar=" + (AtualizarSozinho ? 1 : 0));
             l.Add("prioridade_auto=" + (PrioridadeAuto ? 1 : 0));
             l.Add("prio0=" + string.Join(";", Prioridade[0])); l.Add("prio1=" + string.Join(";", Prioridade[1]));
