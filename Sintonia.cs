@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.7.3.0")]
-[assembly: AssemblyFileVersion("1.7.3.0")]
+[assembly: AssemblyVersion("1.7.4.0")]
+[assembly: AssemblyFileVersion("1.7.4.0")]
 
 static class Program
 {
@@ -2555,7 +2555,7 @@ class Painel : Form
     readonly Timer tSom = new Timer { Interval = 40 };   // 25 quadros por segundo
     // outro PC: niveis pedidos pela rede so enquanto o painel mostra ele (e a opcao esta ligada)
     readonly Dictionary<string, float> niveisRemotos = new Dictionary<string, float>();
-    bool pedindoNiveis; DateTime ultimoNiveis;
+    bool pedindoNiveis, semNiveis; DateTime ultimoNiveis;   // semNiveis: o outro PC e de uma versao que nao manda os niveis
     const int BARRAS = 5;
 
     int LarguraMed() { return BARRAS * E(3) + (BARRAS - 1) * E(2); }
@@ -2563,7 +2563,7 @@ class Painel : Form
     // registra (e desenha) as barrinhas de uma linha
     void Medidor(Graphics g, int x, int yCentro, Color fundo, string chave, IAudioMeterInformation m, List<IAudioMeterInformation> ms)
     {
-        if (!app.MostrarSom || g == null || (m == null && (ms == null || ms.Count == 0) && Alvo == null)) return;
+        if (!app.MostrarSom || g == null || (m == null && (ms == null || ms.Count == 0) && (Alvo == null || semNiveis))) return;
         var md = new Med { R = new Rectangle(x, yCentro - E(8), LarguraMed(), E(16)), Fundo = fundo, Chave = chave, M = m, Ms = ms };
         meds.Add(md);
         DesenharMed(g, md);
@@ -2638,7 +2638,7 @@ class Painel : Form
     // ~8 vezes por segundo, um pedido pequeno (so os niveis); um por vez
     void PedirNiveis()
     {
-        if (pedindoNiveis || estadoRemoto == null || remotoFalhou || (DateTime.Now - ultimoNiveis).TotalMilliseconds < 120) return;
+        if (pedindoNiveis || semNiveis || estadoRemoto == null || remotoFalhou || (DateTime.Now - ultimoNiveis).TotalMilliseconds < 120) return;
         GarantirRemoto();
         pedindoNiveis = true; ultimoNiveis = DateTime.Now;
         var alvo = Alvo;
@@ -2646,6 +2646,7 @@ class Painel : Form
         {
             pedindoNiveis = false;
             if (alvo != Alvo || r == null) return;
+            if (r == "nao") { semNiveis = true; Invalidate(); return; }   // versao antiga do outro lado: esconde as barrinhas
             niveisRemotos.Clear();
             var inv = System.Globalization.CultureInfo.InvariantCulture;
             foreach (var l in r.Split('\n'))
@@ -2670,7 +2671,7 @@ class Painel : Form
         if (!Visible) return;
         tSom.Stop();
         historico.Clear();
-        niveisRemotos.Clear(); pedindoNiveis = false;
+        niveisRemotos.Clear(); pedindoNiveis = false; semNiveis = false;
         if (remoto != null) { remoto.Fechar(); remoto = null; }   // fechou o painel: desconecta do outro PC
         pedindoEstado = false; pendentes.Clear(); enviando.Clear();
         fechando = false;
@@ -3253,7 +3254,7 @@ class Painel : Form
                 direita -= tw + E(8);
             }
             int nomeW = Math.Max(E(20), direita - xTexto);
-            bool comSom = app.MostrarSom && (d.Medidor != null || Alvo != null);
+            bool comSom = app.MostrarSom && (d.Medidor != null || (Alvo != null && !semNiveis));
             int nomeVis = Math.Max(E(20), nomeW - (comSom ? LarguraMed() + E(14) : 0));
             int nw = Math.Min(nomeVis, TextRenderer.MeasureText(g, d.Nome, fNegrito, Size.Empty, TextFormatFlags.NoPadding).Width);
             TextRenderer.DrawText(g, d.Nome, d.Padrao ? fNegrito : fNormal, new Rectangle(xTexto, r1.Y, nomeVis, r1.Height), cTexto, TF);
@@ -3405,7 +3406,7 @@ class Painel : Form
         }
 
         // nome + alfinete quando o app tem uma saida so dele
-        bool comMed = a.Medidores.Count > 0 || (a.Remoto && !a.Sistema);
+        bool comMed = a.Medidores.Count > 0 || (a.Remoto && !a.Sistema && !semNiveis);
         int nomeMax = rMais.Left - xTexto - E(22) - (app.MostrarSom && comMed ? LarguraMed() + E(12) : 0);
         int nw = Math.Min(nomeMax, TextRenderer.MeasureText(g, a.Nome, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width);
         TextRenderer.DrawText(g, a.Nome, fNormal, new Rectangle(xTexto, y + E(3), nomeMax, E(24)), a.Ativo ? cTexto : cFraco, TF);
@@ -3912,7 +3913,7 @@ class Painel : Form
                     int de = IndiceAlvo();
                     if (remoto != null) { remoto.Fechar(); remoto = null; }
                     Alvo = novo; estadoRemoto = null; remotoFalhou = false; pedindoEstado = false; pendentes.Clear(); enviando.Clear();
-                    niveisRemotos.Clear(); pedindoNiveis = false; historico.Clear();
+                    niveisRemotos.Clear(); pedindoNiveis = false; semNiveis = false; historico.Clear();
                     abertura.Clear(); rolagem = 0;
                     int para = IndiceAlvo();
                     Transicao(para > de ? 1 : -1);
