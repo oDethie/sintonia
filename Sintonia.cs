@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.1.0")]
-[assembly: AssemblyFileVersion("1.9.1.0")]
+[assembly: AssemblyVersion("1.9.3.0")]
+[assembly: AssemblyFileVersion("1.9.3.0")]
 
 static class Program
 {
@@ -2591,7 +2591,7 @@ class Painel : Form
     // arrastar o cartao de lado
     bool arrastoMidia; int xMidia, dxMidia; float midiaDesl; int larguraMidia;
     readonly Timer tMidia = new Timer { Interval = 1500 };
-    const int Z_MIDIA_ANT = 30, Z_MIDIA_TOCAR = 31, Z_MIDIA_PROX = 32, Z_MIDIA_CARD = 33, Z_MIDIA_PONTO = 34;
+    const int Z_MIDIA_ANT = 30, Z_MIDIA_TOCAR = 31, Z_MIDIA_PROX = 32, Z_MIDIA_CARD = 33, Z_MIDIA_PONTO = 34, Z_MIDIA_ESPIA = 35;
     Timer tAtualizandoPc;   // semNiveis: o outro PC e de uma versao que nao manda os niveis
     const int BARRAS = 5;
 
@@ -2858,9 +2858,10 @@ class Painel : Form
         var mi = l[i];
         bool varias = l.Count > 1;
         y += E(6);
-        var rc = new Rectangle(pad, y, W - pad * 2, E(58) + (varias ? E(10) : 0));
+        var rc = new Rectangle(pad, y, W - pad * 2, E(58) + (varias ? E(8) : 0));
         int bw = E(32), yb = rc.Y + (E(58) - bw) / 2;
-        var rProx = new Rectangle(rc.Right - E(8) - bw, yb, bw, bw);
+        int espia = varias ? E(20) : 0;          // parte visivel da capa da proxima
+        var rProx = new Rectangle(rc.Right - E(8) - espia - bw, yb, bw, bw);
         var rTocar = new Rectangle(rProx.X - bw - E(2), yb, bw, bw);
         var rAnt = new Rectangle(rTocar.X - bw - E(2), yb, bw, bw);
         var area = new Rectangle(rc.X, rc.Y, rAnt.X - E(4) - rc.X, E(58));
@@ -2869,11 +2870,14 @@ class Painel : Form
         zonas.Add(new Zona { R = rAnt, Tipo = Z_MIDIA_ANT });
         zonas.Add(new Zona { R = rTocar, Tipo = Z_MIDIA_TOCAR });
         zonas.Add(new Zona { R = rProx, Tipo = Z_MIDIA_PROX });
-        // pontinhos (um por sessao), clicaveis
-        int dp = E(6), esp = E(12), wp = l.Count * esp, xp = area.X + (area.Width - wp) / 2 + E(24);
+        var rEspia = new Rectangle(rc.Right - espia - E(2), rc.Y + E(10), E(38), E(38));
+        if (varias) zonas.Add(new Zona { R = new Rectangle(rc.Right - espia - E(4), rc.Y, espia + E(4), rc.Height), Tipo = Z_MIDIA_ESPIA });
+        const int MAXP = 5;
+        int nP = Math.Min(l.Count, MAXP), iniP = Math.Max(0, Math.Min(i - MAXP / 2, l.Count - nP));
+        int espP = E(11), xP = rc.X + (rc.Width - nP * espP) / 2, yP = rc.Bottom - E(9);
         if (varias)
-            for (int k = 0; k < l.Count; k++)
-                zonas.Add(new Zona { R = new Rectangle(xp + k * esp, rc.Bottom - E(16), esp, E(14)), Tipo = Z_MIDIA_PONTO, F = k });
+            for (int k = 0; k < nP; k++)
+                zonas.Add(new Zona { R = new Rectangle(xP + k * espP, yP - E(6), espP, E(12)), Tipo = Z_MIDIA_PONTO, F = iniP + k });
         if (g != null)
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -2900,14 +2904,36 @@ class Painel : Form
             }
             if (varias)
             {
+                // capa da proxima (volta ao inicio depois da ultima) espiando pela borda direita do cartao
+                var prox = l[(i + 1) % l.Count];
+                bool hv = sobre != null && sobre.Tipo == Z_MIDIA_ESPIA;
+                var rE = hv ? new Rectangle(rEspia.X - E(3), rEspia.Y, rEspia.Width, rEspia.Height) : rEspia;   // com o mouse, ela "sai" mais um pouco
+                Bitmap capaP = null;
+                if (Alvo == null) capas.TryGetValue(prox.Id + "|" + prox.Titulo, out capaP);
+                var est2 = g.Save();
+                using (var pc = Desenho.Arred(new RectangleF(rc.X + 1, rc.Y + 1, rc.Width - 2, rc.Height - 2), E(8))) g.SetClip(pc, CombineMode.Intersect);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                for (int k = 0; k < l.Count; k++)
+                using (var pth = Desenho.Arred(new RectangleF(rE.X, rE.Y, rE.Width, rE.Height), E(5)))
                 {
-                    bool at = k == i, hv = sobre != null && sobre.Tipo == Z_MIDIA_PONTO && sobre.F == k;
-                    float d = at ? dp : dp - E(1.5f);
-                    float cx = xp + k * esp + esp / 2f, cy = rc.Bottom - E(9);
-                    using (var b = new SolidBrush(at ? cTexto : hv ? cFraco : Color.FromArgb(110, cFraco)))
-                        g.FillEllipse(b, cx - d / 2, cy - d / 2, d, d);
+                    if (capaP != null) { var est3 = g.Save(); g.SetClip(pth, CombineMode.Intersect); g.DrawImage(capaP, rE); g.Restore(est3); }
+                    else using (var b = new SolidBrush(cHover)) g.FillPath(b, pth);
+                    if (!hv) using (var b = new SolidBrush(Color.FromArgb(70, cCartao))) g.FillPath(b, pth);   // levemente apagada
+                }
+                g.SmoothingMode = SmoothingMode.None;
+                if (capaP == null) TextRenderer.DrawText(g, "\uE8D6", fGlifoP, new Rectangle(rE.X, rE.Y, E(20), rE.Height), cFraco, TC);
+                g.Restore(est2);
+
+                // pontinhos: quantas estao tocando e qual esta na tela
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                for (int k = 0; k < nP; k++)
+                {
+                    int idx = iniP + k;
+                    bool at = idx == i, hvP = sobre != null && sobre.Tipo == Z_MIDIA_PONTO && sobre.F == idx;
+                    bool ponta = (k == 0 && iniP > 0) || (k == nP - 1 && iniP + nP < l.Count);   // ha mais escondidas para esse lado
+                    float d = at ? E(6) : ponta ? E(3) : E(4.5f);
+                    float cx = xP + k * espP + espP / 2f;
+                    using (var b = new SolidBrush(at ? cTexto : hvP ? cFraco : Color.FromArgb(120, cFraco)))
+                        g.FillEllipse(b, cx - d / 2, yP - d / 2, d, d);
                 }
                 g.SmoothingMode = SmoothingMode.None;
             }
@@ -4381,6 +4407,18 @@ class Painel : Form
                     var l = Midias(); int i = IndiceMidia(l);
                     if (i >= 0) { l[i].Tocando = !l[i].Tocando; Invalidate(); }   // resposta imediata no botao
                     ComandoMidia("tocar");
+                }
+                break;
+            case Z_MIDIA_ESPIA:
+                {
+                    var l = Midias(); int i = IndiceMidia(l);
+                    if (l.Count > 1 && i >= 0)
+                    {
+                        midiaSel = l[(i + 1) % l.Count].Id;
+                        midiaDesl = larguraMidia * 0.6f;      // entra pela direita
+                        if (app.Animacoes) Animar(); else midiaDesl = 0;
+                        Invalidate();
+                    }
                 }
                 break;
             case Z_MIDIA_PONTO:
