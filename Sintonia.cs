@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.7.2.0")]
-[assembly: AssemblyFileVersion("1.7.2.0")]
+[assembly: AssemblyVersion("1.7.3.0")]
+[assembly: AssemblyFileVersion("1.7.3.0")]
 
 static class Program
 {
@@ -2553,6 +2553,9 @@ class Painel : Form
     readonly List<Med> meds = new List<Med>();
     readonly Dictionary<string, float[]> historico = new Dictionary<string, float[]>();
     readonly Timer tSom = new Timer { Interval = 40 };   // 25 quadros por segundo
+    // outro PC: niveis pedidos pela rede so enquanto o painel mostra ele (e a opcao esta ligada)
+    readonly Dictionary<string, float> niveisRemotos = new Dictionary<string, float>();
+    bool pedindoNiveis; DateTime ultimoNiveis;
     const int BARRAS = 5;
 
     int LarguraMed() { return BARRAS * E(3) + (BARRAS - 1) * E(2); }
@@ -2560,7 +2563,7 @@ class Painel : Form
     // registra (e desenha) as barrinhas de uma linha
     void Medidor(Graphics g, int x, int yCentro, Color fundo, string chave, IAudioMeterInformation m, List<IAudioMeterInformation> ms)
     {
-        if (!app.MostrarSom || g == null || (m == null && (ms == null || ms.Count == 0))) return;
+        if (!app.MostrarSom || g == null || (m == null && (ms == null || ms.Count == 0) && Alvo == null)) return;
         var md = new Med { R = new Rectangle(x, yCentro - E(8), LarguraMed(), E(16)), Fundo = fundo, Chave = chave, M = m, Ms = ms };
         meds.Add(md);
         DesenharMed(g, md);
@@ -2591,6 +2594,7 @@ class Painel : Form
     {
         if (!Visible || fechando || !app.MostrarSom) { tSom.Stop(); return; }
         if (arrastoApp != null || arrastando != null || meds.Count == 0) return;
+        if (Alvo != null) PedirNiveis();
         Graphics g = null;
         try
         {
@@ -2601,6 +2605,7 @@ class Painel : Form
                 {
                     if (md.M != null && md.M.GetPeakValue(out v) == 0) pico = v;
                     if (md.Ms != null) foreach (var m in md.Ms) if (m.GetPeakValue(out v) == 0 && v > pico) pico = v;
+                    if (Alvo != null && md.M == null && (md.Ms == null || md.Ms.Count == 0) && niveisRemotos.TryGetValue(md.Chave, out v)) pico = v;
                 }
                 catch { }
                 float[] h;
@@ -2630,6 +2635,28 @@ class Painel : Form
         finally { if (g != null) g.Dispose(); }
     }
 
+    // ~8 vezes por segundo, um pedido pequeno (so os niveis); um por vez
+    void PedirNiveis()
+    {
+        if (pedindoNiveis || estadoRemoto == null || remotoFalhou || (DateTime.Now - ultimoNiveis).TotalMilliseconds < 120) return;
+        GarantirRemoto();
+        pedindoNiveis = true; ultimoNiveis = DateTime.Now;
+        var alvo = Alvo;
+        remoto.Pedir("niveis", r =>
+        {
+            pedindoNiveis = false;
+            if (alvo != Alvo || r == null) return;
+            niveisRemotos.Clear();
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            foreach (var l in r.Split('\n'))
+            {
+                int t = l.LastIndexOf('\t');
+                float v;
+                if (t > 0 && float.TryParse(l.Substring(t + 1), System.Globalization.NumberStyles.Float, inv, out v)) niveisRemotos[l.Substring(0, t)] = v;
+            }
+        });
+    }
+
     public void SomMudou()
     {
         Audio.ComMedidor = app.MostrarSom;
@@ -2643,6 +2670,7 @@ class Painel : Form
         if (!Visible) return;
         tSom.Stop();
         historico.Clear();
+        niveisRemotos.Clear(); pedindoNiveis = false;
         if (remoto != null) { remoto.Fechar(); remoto = null; }   // fechou o painel: desconecta do outro PC
         pedindoEstado = false; pendentes.Clear(); enviando.Clear();
         fechando = false;
@@ -3225,7 +3253,7 @@ class Painel : Form
                 direita -= tw + E(8);
             }
             int nomeW = Math.Max(E(20), direita - xTexto);
-            bool comSom = app.MostrarSom && d.Medidor != null;
+            bool comSom = app.MostrarSom && (d.Medidor != null || Alvo != null);
             int nomeVis = Math.Max(E(20), nomeW - (comSom ? LarguraMed() + E(14) : 0));
             int nw = Math.Min(nomeVis, TextRenderer.MeasureText(g, d.Nome, fNegrito, Size.Empty, TextFormatFlags.NoPadding).Width);
             TextRenderer.DrawText(g, d.Nome, d.Padrao ? fNegrito : fNormal, new Rectangle(xTexto, r1.Y, nomeVis, r1.Height), cTexto, TF);
@@ -3377,12 +3405,13 @@ class Painel : Form
         }
 
         // nome + alfinete quando o app tem uma saida so dele
-        int nomeMax = rMais.Left - xTexto - E(22) - (app.MostrarSom && a.Medidores.Count > 0 ? LarguraMed() + E(12) : 0);
+        bool comMed = a.Medidores.Count > 0 || (a.Remoto && !a.Sistema);
+        int nomeMax = rMais.Left - xTexto - E(22) - (app.MostrarSom && comMed ? LarguraMed() + E(12) : 0);
         int nw = Math.Min(nomeMax, TextRenderer.MeasureText(g, a.Nome, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width);
         TextRenderer.DrawText(g, a.Nome, fNormal, new Rectangle(xTexto, y + E(3), nomeMax, E(24)), a.Ativo ? cTexto : cFraco, TF);
         if (a.Saida != null)
             TextRenderer.DrawText(g, "", fGlifoP, new Rectangle(xTexto + nw + E(6), y + E(3), E(14), E(24)), cAcento, TC);
-        if (app.MostrarSom && a.Medidores.Count > 0 && !arrastado)
+        if (app.MostrarSom && comMed && !arrastado)
             Medidor(g, xTexto + nw + (a.Saida != null ? E(26) : E(10)), y + E(3) + E(12), linhaSobre && movel ? cHover : cCartao,
                 "a|" + d.Id + "|" + a.Exe, null, a.Medidores);
 
@@ -3883,6 +3912,7 @@ class Painel : Form
                     int de = IndiceAlvo();
                     if (remoto != null) { remoto.Fechar(); remoto = null; }
                     Alvo = novo; estadoRemoto = null; remotoFalhou = false; pedindoEstado = false; pendentes.Clear(); enviando.Clear();
+                    niveisRemotos.Clear(); pedindoNiveis = false; historico.Clear();
                     abertura.Clear(); rolagem = 0;
                     int para = IndiceAlvo();
                     Transicao(para > de ? 1 : -1);
@@ -6310,7 +6340,10 @@ class App : ApplicationContext
         if (nova || remCache == null || (DateTime.Now - remCacheT).TotalSeconds > 3)
         {
             Audio.Liberar(remCache);
-            remCache = Audio.Listar(0, true, Inativos, Nomes);
+            bool comMed = Audio.ComMedidor;
+            Audio.ComMedidor = true;      // o outro PC pode querer as barrinhas do som
+            try { remCache = Audio.Listar(0, true, Inativos, Nomes); }
+            finally { Audio.ComMedidor = comMed; }
             remCache.AddRange(Audio.Listar(1, false, false, Nomes));
             remCacheT = DateTime.Now;
         }
@@ -6435,6 +6468,23 @@ class App : ApplicationContext
                         remCache = null;
                         PainelMudou();
                         return "ok";
+                    }
+                case "niveis":
+                    {
+                        var sb = new StringBuilder();
+                        float v;
+                        foreach (var d in ListaRemota(false))
+                        {
+                            if (d.Fluxo != 0) continue;
+                            if (d.Medidor != null && d.Medidor.GetPeakValue(out v) == 0 && v > 0.0005f) sb.Append("d|").Append(T(d.Id)).Append('\t').Append(N(v)).Append('\n');
+                            foreach (var a in d.Apps)
+                            {
+                                float pico = 0;
+                                foreach (var m in a.Medidores) if (m.GetPeakValue(out v) == 0 && v > pico) pico = v;
+                                if (pico > 0.0005f) sb.Append("a|").Append(T(d.Id)).Append('|').Append(T(a.Exe)).Append('\t').Append(N(pico)).Append('\n');
+                            }
+                        }
+                        return sb.ToString();
                     }
                 case "teste":
                     {
