@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.16.0")]
-[assembly: AssemblyFileVersion("1.9.16.0")]
+[assembly: AssemblyVersion("1.9.17.0")]
+[assembly: AssemblyFileVersion("1.9.17.0")]
 
 static class Program
 {
@@ -5947,6 +5947,7 @@ static class Atualizador
         r.UserAgent = "Sintonia-Atualizador";        // nome generico, sem dados seus
         r.Timeout = 20000; r.ReadWriteTimeout = 20000;
         r.AllowAutoRedirect = true;
+        r.KeepAlive = false;   // fecha a conexao ao terminar (nada fica aberto depois da checagem)
         return r;
     }
 
@@ -7119,6 +7120,7 @@ class App : ApplicationContext
                     if (AtualizarSozinho || agora) TentarInstalar(agora);
                 }
                 AtualizarConfig();
+                if (!painel.Visible && !MenuAberto) Aparar();   // devolve ao Windows a memoria usada na checagem
             });
         }) { IsBackground = true, Priority = ThreadPriority.Lowest }.Start();
     }
