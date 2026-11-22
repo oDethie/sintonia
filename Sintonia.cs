@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.11.0")]
-[assembly: AssemblyFileVersion("1.9.11.0")]
+[assembly: AssemblyVersion("1.9.12.0")]
+[assembly: AssemblyFileVersion("1.9.12.0")]
 
 static class Program
 {
@@ -3329,8 +3329,13 @@ class Painel : Form
                 using (var logo = Desenho.Logo(lg)) g.DrawImage(logo, rTit.X, rTit.Y + (rTit.Height - lg) / 2);
                 rTit = new Rectangle(rTit.X + lg + E(10), rTit.Y, rTit.Width - lg - E(10), rTit.Height);
             }
-            int tw = TextRenderer.MeasureText(g, "Sintonia", fTitulo, Size.Empty, TextFormatFlags.NoPadding).Width;
-            TextRenderer.DrawText(g, "Sintonia", fTitulo, rTit, cTexto, TF);
+            int tw = 0;
+            if (app.MostrarNomeApp)
+            {
+                tw = TextRenderer.MeasureText(g, "Sintonia", fTitulo, Size.Empty, TextFormatFlags.NoPadding).Width;
+                TextRenderer.DrawText(g, "Sintonia", fTitulo, rTit, cTexto, TF);
+            }
+            else if (sub.StartsWith("  ·  ")) sub = sub.Substring(5);   // sem o nome, sem o "·" na frente
             if (sub.Length > 0)
             {
                 bool comBat = Alvo != null && app.MostrarBateria && bateriaPct >= 0;
@@ -5977,6 +5982,7 @@ class App : ApplicationContext
     public bool Controlador;                 // este PC controla outros (padrao: desligado)
     public bool AtualizarSozinho = true;
     public bool LembrarPc = true;
+    public bool MostrarNomeApp = true;   // o nome "Sintonia" no topo do painel
     public bool TocandoAgora;          // cartao "Tocando agora" no painel (padrao: desligado)
     public int TrocaMidiaSeg = 10;
     public bool MidiaAberto = true;    // (antigo) sempre aberto
@@ -7701,6 +7707,7 @@ class App : ApplicationContext
                     case "menu_lateral": MenuLateralAberto = v == "1"; break;
                     case "adaptador": MostrarAdaptador = v == "1"; break;
                     case "logo": MostrarLogo = v == "1"; break;
+                    case "nome_app": MostrarNomeApp = v == "1"; break;
                     case "som": MostrarSom = v == "1"; break;
                     case "fixar": FixarBandeja = v == "1"; break;
                     case "controlador": Controlador = v == "1"; break;
@@ -7829,7 +7836,7 @@ class App : ApplicationContext
                 "lembrar=" + (Lembrar ? 1 : 0), "perfis_auto=" + (PerfisAuto ? 1 : 0), "voltar_perfil=" + (VoltarPerfil ? 1 : 0),
                 "roda=" + (RodaIcone ? 1 : 0), "mics=" + (Mics ? 1 : 0), "inativos=" + (Inativos ? 1 : 0),
                 "perfis=" + (UsarPerfis ? 1 : 0), "aviso=" + (AvisoTela ? 1 : 0), "roda_painel=" + (RodaPainel ? 1 : 0),
-                "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
+                "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "nome_app=" + (MostrarNomeApp ? 1 : 0), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
             l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
@@ -8208,6 +8215,7 @@ class Configuracoes : Form
             Chave("Mostrar apps em silêncio", "Mostra também os apps abertos que não estão tocando som agora", () => app.Inativos, v => app.Inativos = v);
             Chave("Mostrar o nome do adaptador", "Ex.: \"AMD High Definition Audio Device\" ao lado do nome de cada saída", () => app.MostrarAdaptador, v => app.MostrarAdaptador = v);
             Chave("Mostrar o logo no topo do painel", "O ícone roxo do Sintonia ao lado do nome, no cabeçalho do painel", () => app.MostrarLogo, v => app.MostrarLogo = v);
+            Chave("Mostrar o nome \"Sintonia\" no topo do painel", "Desligado, o topo mostra só o logo e o nome do outro PC ou do perfil ativo", () => app.MostrarNomeApp, v => app.MostrarNomeApp = v);
             Chave("Mostrar o som tocando", "Barrinhas animadas ao lado de cada saída e app, conforme o som que está tocando. Só funciona com o painel aberto",
                 () => app.MostrarSom, v => app.DefinirSom(v));
             Chave("Tocando agora", "Cartão no fim do painel com a música ou vídeo que está tocando (Spotify, YouTube…) e os botões anterior, tocar/pausar e próxima. Também do outro PC",
