@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.12.0")]
-[assembly: AssemblyFileVersion("1.9.12.0")]
+[assembly: AssemblyVersion("1.9.13.0")]
+[assembly: AssemblyFileVersion("1.9.13.0")]
 
 static class Program
 {
@@ -2854,8 +2854,9 @@ class Painel : Form
         arrastoMidia = false; dxMidia = 0; Capture = false;
         if (i < 0) return;
         ultimaTrocaMidia = DateTime.Now;
-        if (dx < -w / 5 && i < l.Count - 1) { midiaSel = l[i + 1].Id; midiaDesl = dx + w; }
-        else if (dx > w / 5 && i > 0) { midiaSel = l[i - 1].Id; midiaDesl = dx - w; }
+        int n = l.Count;
+        if (dx < -w / 5 && n > 1) { midiaSel = l[(i + 1) % n].Id; midiaDesl = dx + w; }          // esquerda: proxima (depois da ultima, a primeira)
+        else if (dx > w / 5 && n > 1) { midiaSel = l[(i - 1 + n) % n].Id; midiaDesl = dx - w; }  // direita: anterior (antes da primeira, a ultima)
         else midiaDesl = dx;
         if (app.Animacoes) Animar(); else midiaDesl = 0;
         Invalidate();
@@ -2973,14 +2974,12 @@ class Painel : Form
             g.SmoothingMode = SmoothingMode.None;
             // conteudo desliza (arrastando ou encaixando), recortado na area do cartao
             int off = arrastoMidia ? dxMidia : (int)Math.Round(midiaDesl);
-            if (arrastoMidia && ((off > 0 && i == 0) || (off < 0 && i == l.Count - 1))) off = off / 3;   // nas pontas: resiste
             var est = g.Save();
             g.SetClip(new Rectangle(area.X + 1, area.Y + 1, area.Width, area.Height - 2), CombineMode.Intersect);
             ConteudoMidia(g, mi, area, off, ab);
-            if (off < 0 && i < l.Count - 1) ConteudoMidia(g, l[i + 1], area, off + area.Width, ab);
-            if (off > 0 && i > 0) ConteudoMidia(g, l[i - 1], area, off - area.Width, ab);
-            if (off < 0 && i == l.Count - 1 && l.Count > 1 && !arrastoMidia) ConteudoMidia(g, l[0], area, off + area.Width, ab);   // volta ao inicio
-            if (off > 0 && i == 0 && l.Count > 1 && !arrastoMidia) ConteudoMidia(g, l[l.Count - 1], area, off - area.Width, ab);
+            // vizinhas em circulo: a seguinte entra pela direita, a anterior pela esquerda
+            if (off < 0 && l.Count > 1) ConteudoMidia(g, l[(i + 1) % l.Count], area, off + area.Width, ab);
+            if (off > 0 && l.Count > 1) ConteudoMidia(g, l[(i - 1 + l.Count) % l.Count], area, off - area.Width, ab);
             g.Restore(est);
             var botoes = ab > 0.5f
                 ? new[] { new KeyValuePair<Rectangle, int>(rAnt, Z_MIDIA_ANT), new KeyValuePair<Rectangle, int>(rTocar, Z_MIDIA_TOCAR), new KeyValuePair<Rectangle, int>(rProx, Z_MIDIA_PROX) }
@@ -4856,6 +4855,14 @@ class Painel : Form
             menu.Items.Add(it);
         }
         menu.Items.Add(new ToolStripSeparator());
+        if (!a.Remoto && !a.Sistema && !string.IsNullOrEmpty(a.Exe))
+        {
+            string exe = a.Exe;
+            var pf = new ToolStripMenuItem("Pausar quando o fone desconectar") { Checked = app.PausarAoTirarFone.Contains(exe) };
+            pf.Click += (s, e) => app.AlternarPausarFone(exe);
+            menu.Items.Add(pf);
+            menu.Items.Add(new ToolStripSeparator());
+        }
         menu.Items.Add(new ToolStripLabel("Dica: arraste o app até outra saída") { Tag = "fraco" });
         app.AplicarTema(menu);
         app.MenuAberto = true;
@@ -5658,6 +5665,34 @@ static class Midia
     // "tocar" / "proxima" / "anterior"
     public static bool Comando(string c) { return Comando(c, null); }
 
+    // pausa as sessoes desses apps (ex.: "spotify.exe") que estiverem tocando; devolve quantas pausou
+    public static int Pausar(ICollection<string> exes)
+    {
+        int n = 0;
+        Sessao();
+        if (gerente == null || exes.Count == 0) return 0;
+        foreach (var x in (System.Collections.IEnumerable)Chamar(tGer, gerente, "GetSessions"))
+        {
+            try
+            {
+                string aumid = ((string)Prop(tSes, x, "SourceAppUserModelId") ?? "").ToLowerInvariant();
+                bool deste = false;
+                foreach (var e in exes)
+                {
+                    string b = e.ToLowerInvariant(); if (b.EndsWith(".exe")) b = b.Substring(0, b.Length - 4);
+                    if (b.Length > 0 && (aumid == b || aumid == b + ".exe" || aumid.EndsWith("!" + b) || aumid.Contains(b))) deste = true;
+                }
+                if (!deste) continue;
+                var pb = Chamar(tSes, x, "GetPlaybackInfo");
+                if (Convert.ToInt32(Prop(tPlay, pb, "PlaybackStatus")) != 4) continue;   // so as que estao tocando
+                var r = Esperar(Chamar(tSes, x, "TryPauseAsync"), typeof(bool), 1500);
+                if (r is bool && (bool)r) n++;
+            }
+            catch { }
+        }
+        return n;
+    }
+
     public static bool Comando(string c, string id)
     {
         var s = SessaoPorId(id);
@@ -5982,7 +6017,10 @@ class App : ApplicationContext
     public bool Controlador;                 // este PC controla outros (padrao: desligado)
     public bool AtualizarSozinho = true;
     public bool LembrarPc = true;
-    public bool MostrarNomeApp = true;   // o nome "Sintonia" no topo do painel
+    public bool MostrarNomeApp = true;
+    // apps que pausam quando o fone/headset desconecta (clique direito no app)
+    public readonly HashSet<string> PausarAoTirarFone = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    Dictionary<string, int> saidasVistas;   // saidas conectadas na ultima conferencia (id -> forma)   // o nome "Sintonia" no topo do painel
     public bool TocandoAgora;          // cartao "Tocando agora" no painel (padrao: desligado)
     public int TrocaMidiaSeg = 10;
     public bool MidiaAberto = true;    // (antigo) sempre aberto
@@ -6125,7 +6163,7 @@ class App : ApplicationContext
         vigia = new Vigia(
             tipo => Postar(() =>
             {
-                if (tipo == 1) { ultimoEventoAparelho = DateTime.Now; tPrio.Stop(); tPrio.Start(); }   // aparelho entrou/saiu: confere a prioridade (espera o Bluetooth assentar)
+                if (tipo == 1) { ultimoEventoAparelho = DateTime.Now; ConferirFone(); tPrio.Stop(); tPrio.Start(); }   // aparelho entrou/saiu: confere a prioridade (espera o Bluetooth assentar)
                 if (tipo == 2) PadraoMudou();
                 if (tipo != 3) { recarregarPainel = true; ultimoId = null; }
                 if (!tAtualizar.Enabled) tAtualizar.Start();
@@ -6141,6 +6179,7 @@ class App : ApplicationContext
         tIni.Tick += (s, e) =>
         {
             tIni.Stop(); tIni.Dispose();
+            ConferirFone();
             ConferirPrioridade();
             foreach (var kv in Audio.Sessoes()) SessaoNova(kv.Key);
             if (!atOk[0] || !atOk[1] || !atOk[2]) RegistrarAtalhos(); // tenta de novo (ex.: copia antiga ainda fechando)
@@ -6894,6 +6933,35 @@ class App : ApplicationContext
             SalvarConfig();
             AtualizarConfig();
         }
+    }
+
+    // um fone/headset sumiu? pausa na hora os apps marcados (antes do som "vazar" na caixa)
+    void ConferirFone()
+    {
+        var agora = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var ds = Audio.Listar(0, false, false, null);
+        foreach (var d in ds) agora[d.Id] = d.Forma;
+        Audio.Liberar(ds);
+        var antes = saidasVistas;
+        saidasVistas = agora;
+        if (antes == null || PausarAoTirarFone.Count == 0) return;
+        bool saiuFone = false;
+        foreach (var kv in antes) if (!agora.ContainsKey(kv.Key) && (kv.Value == 3 || kv.Value == 5)) saiuFone = true;   // 3 fone, 5 headset
+        if (!saiuFone) return;
+        var apps = new List<string>(PausarAoTirarFone);
+        new Thread(() =>
+        {
+            int n = 0;
+            try { n = Midia.Pausar(apps); } catch { }
+            if (n > 0) Postar(() => Avisar('\uE769', n == 1 ? "Música pausada: o fone desconectou" : n + " apps pausados: o fone desconectou"));
+        }) { IsBackground = true }.Start();
+    }
+
+    public void AlternarPausarFone(string exe)
+    {
+        if (string.IsNullOrEmpty(exe)) return;
+        if (!PausarAoTirarFone.Remove(exe)) PausarAoTirarFone.Add(exe);
+        SalvarConfig();
     }
 
     public void MoverPrioridade(int fluxo, string id, int para)
@@ -7708,6 +7776,7 @@ class App : ApplicationContext
                     case "adaptador": MostrarAdaptador = v == "1"; break;
                     case "logo": MostrarLogo = v == "1"; break;
                     case "nome_app": MostrarNomeApp = v == "1"; break;
+                    case "pausar_fone": foreach (var o in v.Split(';')) if (o.Length > 0) PausarAoTirarFone.Add(o); break;
                     case "som": MostrarSom = v == "1"; break;
                     case "fixar": FixarBandeja = v == "1"; break;
                     case "controlador": Controlador = v == "1"; break;
@@ -7836,7 +7905,7 @@ class App : ApplicationContext
                 "lembrar=" + (Lembrar ? 1 : 0), "perfis_auto=" + (PerfisAuto ? 1 : 0), "voltar_perfil=" + (VoltarPerfil ? 1 : 0),
                 "roda=" + (RodaIcone ? 1 : 0), "mics=" + (Mics ? 1 : 0), "inativos=" + (Inativos ? 1 : 0),
                 "perfis=" + (UsarPerfis ? 1 : 0), "aviso=" + (AvisoTela ? 1 : 0), "roda_painel=" + (RodaPainel ? 1 : 0),
-                "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "nome_app=" + (MostrarNomeApp ? 1 : 0), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
+                "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "nome_app=" + (MostrarNomeApp ? 1 : 0), "pausar_fone=" + string.Join(";", PausarAoTirarFone), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
             l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
