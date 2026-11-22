@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.23.0")]
-[assembly: AssemblyFileVersion("1.9.23.0")]
+[assembly: AssemblyVersion("1.9.24.0")]
+[assembly: AssemblyFileVersion("1.9.24.0")]
 
 static class Program
 {
@@ -1419,8 +1419,31 @@ static class Processos
             if (n.Length == 0 || n.Length > 40) n = null;
         }
         catch { }
+        // jogo sem nome no arquivo (ex.: "Bates-Win64-Shipping.exe" do Until Dawn): usa o nome da pasta do jogo na loja
+        string exe = Path.GetFileNameWithoutExtension(caminho);
+        if (n == null || string.Equals(n, exe, StringComparison.OrdinalIgnoreCase) || n.IndexOf("-Shipping", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            string pasta = PastaDoJogo(caminho);
+            if (pasta != null) n = pasta;
+        }
         nomes[caminho] = n;
         return n;
+    }
+
+    // ...\steamapps\common\Until Dawn\... -> "Until Dawn" (Steam, Epic, GOG, Xbox, EA, Ubisoft, Riot)
+    static string PastaDoJogo(string caminho)
+    {
+        var partes = caminho.Split('\\');
+        for (int i = 0; i < partes.Length - 2; i++)
+        {
+            string a = partes[i].ToLowerInvariant(), b = partes[i + 1].ToLowerInvariant();
+            int k = -1;
+            if (a == "steamapps" && b == "common") k = i + 2;
+            else if (a == "epic games" || a == "gog games" || a == "xboxgames" || a == "ea games" || a == "riot games") k = i + 1;
+            else if (a == "ubisoft game launcher" && b == "games") k = i + 2;
+            if (k > 0 && k < partes.Length - 1 && partes[k].Length > 0 && partes[k].Length <= 40) return partes[k];
+        }
+        return null;
     }
 
     public static Bitmap Icone(string caminho, int tam)
@@ -1603,6 +1626,16 @@ static class Desenho
 {
     [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
     static string fonte;
+
+    // icones (Segoe Fluent Icons) com suavizacao cinza, sem ClearType: em monitor OLED o ClearType pinta
+    // traco fino de verde/rosa/laranja (ele supoe subpixels RGB em faixa, que o OLED nao tem)
+    public static void Glifo(Graphics g, string t, Font f, Rectangle r, Color c, TextFormatFlags fl)
+    {
+        var h = g.TextRenderingHint;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        TextRenderer.DrawText(g, t, f, r, c, fl);
+        g.TextRenderingHint = h;
+    }
 
     public static string FonteIcones
     {
@@ -2282,7 +2315,7 @@ class Aviso : Form
         var g = e.Graphics;
         g.Clear(cFundo);
         if (fTexto == null) return;
-        TextRenderer.DrawText(g, glifo.ToString(), fGlifo, new Rectangle(E(14), 0, E(32), Height), cIcone,
+        Desenho.Glifo(g, glifo.ToString(), fGlifo, new Rectangle(E(14), 0, E(32), Height), cIcone,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         TextRenderer.DrawText(g, texto, fTexto, new Rectangle(E(54), 0, Width - E(66), Height), cTexto,
             TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
@@ -3097,7 +3130,7 @@ class Painel : Form
             else { using (var b = new SolidBrush(cHover)) g.FillPath(b, pth); }
         }
         g.SmoothingMode = SmoothingMode.None;
-        if (capa == null) TextRenderer.DrawText(g, "\uE8D6", ab > 0.5f ? fGlifo : fGlifoP, rArte, cFraco, TC);
+        if (capa == null) Desenho.Glifo(g, "\uE8D6", ab > 0.5f ? fGlifo : fGlifoP, rArte, cFraco, TC);
         int tx = rArte.Right + E(10), twm = Math.Max(E(10), area.Right - E(6) - tx + dx);
         if (ab > 0.5f)
         {
@@ -3183,9 +3216,9 @@ class Painel : Form
             // seta: embaixo -> sobe para o topo; em cima -> desce para o rodape
             bool hvM = sobre != null && sobre.Tipo == Z_MIDIA_MOVER;
             if (hvM) Fundo(g, rMover, cHover, E(5));
-            TextRenderer.DrawText(g, topo ? "\uE74B" : "\uE74A", fGlifoP, rMover, hvM ? cTexto : cFraco, TC);
+            Desenho.Glifo(g, topo ? "\uE74B" : "\uE74A", fGlifoP, rMover, hvM ? cTexto : cFraco, TC);
             // alfinete: fixado = preso no rodape (em destaque); desafixado = rola junto com a lista
-            TextRenderer.DrawText(g, app.MidiaFixo ? "\uE842" : "\uE718", fGlifoP, rSeta,
+            Desenho.Glifo(g, app.MidiaFixo ? "\uE842" : "\uE718", fGlifoP, rSeta,
                 app.MidiaFixo ? cTexto : (hvT ? cTexto : cFraco), TC);
         }
         y += E(28);
@@ -3260,7 +3293,7 @@ class Painel : Form
             {
                 if (sobre != null && sobre.Tipo == kv.Value) Fundo(g, kv.Key, cHover, E(5));
                 string gl = kv.Value == Z_MIDIA_ANT ? "\uE892" : kv.Value == Z_MIDIA_PROX ? "\uE893" : (mi.Tocando ? "\uE769" : "\uE768");
-                TextRenderer.DrawText(g, gl, kv.Value == Z_MIDIA_TOCAR && ab > 0.5f ? fGlifo : fGlifoP, kv.Key, cTexto, TC);
+                Desenho.Glifo(g, gl, kv.Value == Z_MIDIA_TOCAR && ab > 0.5f ? fGlifo : fGlifoP, kv.Key, cTexto, TC);
             }
             if (extras)
             {
@@ -3280,7 +3313,7 @@ class Painel : Form
                     if (!hv) using (var b = new SolidBrush(Color.FromArgb(70, cCartao))) g.FillPath(b, pth);
                 }
                 g.SmoothingMode = SmoothingMode.None;
-                if (capaP == null) TextRenderer.DrawText(g, "\uE8D6", fGlifoP, new Rectangle(rE.X, rE.Y, E(20), rE.Height), cFraco, TC);
+                if (capaP == null) Desenho.Glifo(g, "\uE8D6", fGlifoP, new Rectangle(rE.X, rE.Y, E(20), rE.Height), cFraco, TC);
                 g.Restore(est2);
 
                 g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -3761,20 +3794,20 @@ class Painel : Form
                     }
                     g.SmoothingMode = SmoothingMode.None;
                     int tx = bx + E(22);
-                    if (bateriaCarregando) { TextRenderer.DrawText(g, "\uE945", fGlifoP, new Rectangle(tx - E(2), rTit.Y, E(14), rTit.Height), cb, TC); tx += E(12); }
+                    if (bateriaCarregando) { Desenho.Glifo(g, "\uE945", fGlifoP, new Rectangle(tx - E(2), rTit.Y, E(14), rTit.Height), cb, TC); tx += E(12); }
                     TextRenderer.DrawText(g, bateriaPct + "%", fNormal, new Rectangle(tx, rTit.Y, E(50), rTit.Height), cb, TF);
                 }
             }
             if (Sobre(Z_MENU, null, null, null)) Fundo(g, rMenu, cHover, E(4));
-            TextRenderer.DrawText(g, "\uE713", fGlifo, rMenu, cTexto, TC);
+            Desenho.Glifo(g, "\uE713", fGlifo, rMenu, cTexto, TC);
             // prioridade das saidas: em destaque quando a troca automatica esta ligada
             if (Sobre(Z_PRIORIDADE, null, null, null)) Fundo(g, rPrio, cHover, E(4));
-            TextRenderer.DrawText(g, "\uE8CB", fGlifo, rPrio, app.PrioridadeAuto ? cAcento : cTexto, TC);
+            Desenho.Glifo(g, "\uE8CB", fGlifo, rPrio, app.PrioridadeAuto ? cAcento : cTexto, TC);
             if (comLua)
             {
                 // lua: colorida enquanto o modo noite esta segurando o volume
                 if (Sobre(Z_NOITE, null, null, null)) Fundo(g, rLua, cHover, E(4));
-                TextRenderer.DrawText(g, "\uE708", fGlifo, rLua, app.NoiteAgindo() ? (escuro ? Color.FromArgb(255, 204, 102) : Color.FromArgb(196, 132, 0)) : Color.FromArgb(150, cFraco), TC);   // amarelo de lua: nao depende da cor de destaque
+                Desenho.Glifo(g, "\uE708", fGlifo, rLua, app.NoiteAgindo() ? (escuro ? Color.FromArgb(255, 204, 102) : Color.FromArgb(196, 132, 0)) : Color.FromArgb(150, cFraco), TC);   // amarelo de lua: nao depende da cor de destaque
             }
         }
         y += E(40);
@@ -3858,7 +3891,7 @@ class Painel : Form
                 int ligado = EstadoPc(pc);     // 1 ligado, 0 desligado, -1 nao sabe
                 Color cTxt = ativo ? cTexto : cFraco;
                 if (ligado == 0 && !atualizandoEste) cTxt = Color.FromArgb(110, cFraco);
-                TextRenderer.DrawText(g, gl.ToString(), fGlifoP, new Rectangle(x0, r.Y, E(16), r.Height), cTxt, TC);
+                Desenho.Glifo(g, gl.ToString(), fGlifoP, new Rectangle(x0, r.Y, E(16), r.Height), cTxt, TC);
                 TextRenderer.DrawText(g, txt, fT, new Rectangle(x0 + E(24), r.Y, tw + E(2), r.Height), cTxt, TF);
                 if (ligado == 1 && !atualizandoEste)
                 {
@@ -3992,7 +4025,7 @@ class Painel : Form
                         if (Sobre(tipo, null, null, pp) && listaAb >= 0.99f) Fundo(g, r, cHover, E(4));
                         if (at) Fundo(g, new Rectangle(r.X, r.Y + E(9), E(3), r.Height - E(18)), cAcento, E(1.5f));
                         string gl = novo ? "\uE710" : at ? "\uE73E" : "";
-                        if (gl.Length > 0) TextRenderer.DrawText(g, gl, fGlifoP, new Rectangle(r.X + E(10), r.Y, E(20), r.Height), novo ? cFraco : cTexto, TC);
+                        if (gl.Length > 0) Desenho.Glifo(g, gl, fGlifoP, new Rectangle(r.X + E(10), r.Y, E(20), r.Height), novo ? cFraco : cTexto, TC);
                         TextRenderer.DrawText(g, novo ? "Novo perfil com a configuração de agora" : pp.Nome, at ? fNegrito : fNormal,
                             new Rectangle(r.X + E(38), r.Y, r.Width - E(46), r.Height), novo ? cFraco : cTexto, TF);
                         if (!novo && arrastoApp != null && arrastoApp.P == pp) Fundo(g, r, Color.FromArgb(150, cCartao), E(4));
@@ -4040,7 +4073,7 @@ class Painel : Form
                 bool hov = sobre != null && sobre.Tipo == Z_ESCONDIDOS && sobre.F == fluxo;
                 if (hov) Fundo(g, r, cHover, E(4));
                 if (vistaAlvo[fluxo]) Fundo(g, r, Color.FromArgb(escuro ? 60 : 40, cAcento), E(4));
-                TextRenderer.DrawText(g, (vistaAlvo[fluxo] ? '\uED1A' : '\uE7B3').ToString(), fGlifo, r,
+                Desenho.Glifo(g, (vistaAlvo[fluxo] ? '\uED1A' : '\uE7B3').ToString(), fGlifo, r,
                     vistaAlvo[fluxo] ? cTexto : hov ? cTexto : cFraco, TC);
             }
         }
@@ -4130,7 +4163,7 @@ class Painel : Form
                     using (var pn = new Pen(cBorda) { DashStyle = DashStyle.Dash }) g.DrawPath(pn, p);
                 }
                 g.SmoothingMode = SmoothingMode.None;
-                TextRenderer.DrawText(g, e.Glifo.ToString(), fGlifo, new Rectangle(x0 + E(10), y, E(32), rc.Height), cFraco, TC);
+                Desenho.Glifo(g, e.Glifo.ToString(), fGlifo, new Rectangle(x0 + E(10), y, E(32), rc.Height), cFraco, TC);
                 TextRenderer.DrawText(g, e.Nome, fNormal, new Rectangle(x0 + E(50), y, rb.Left - x0 - E(58), rc.Height), cFraco, TF);
                 bool hov = sobre != null && sobre.Tipo == Z_MOSTRAR && sobre.Id == e.Id;
                 using (var p = Desenho.Arred(new RectangleF(rb.X + 0.5f, rb.Y + 0.5f, rb.Width - 1, rb.Height - 1), E(4)))
@@ -4140,7 +4173,7 @@ class Painel : Form
                     using (var pn = new Pen(cBorda)) g.DrawPath(pn, p);
                     g.SmoothingMode = SmoothingMode.None;
                 }
-                TextRenderer.DrawText(g, "\uE7B3", fGlifoP, new Rectangle(rb.X + E(8), rb.Y, E(16), rb.Height), cTexto, TC);
+                Desenho.Glifo(g, "\uE7B3", fGlifoP, new Rectangle(rb.X + E(8), rb.Y, E(16), rb.Height), cTexto, TC);
                 TextRenderer.DrawText(g, "Mostrar", fPequena, new Rectangle(rb.X + E(28), rb.Y, rb.Width - E(32), rb.Height), cTexto, TF);
             }
             y += E(56);
@@ -4213,8 +4246,8 @@ class Painel : Form
             bool hovCab = (Sobre(Z_PADRAO, d, null, null) || Sobre(Z_USAR, d, null, null) || Sobre(Z_RECOLHER, d, null, null)) && arrastoApp == null;
             if (hovCab) Fundo(g, new Rectangle(r1.X, r1.Y, rCh.Right - r1.X, r1.Height), cHover, E(5));
             if (Sobre(Z_RECOLHER, d, null, null)) Fundo(g, rCh, ControlPaint.Light(cHover, 0.1f), E(5));
-            TextRenderer.DrawText(g, (aberto ? '' : '').ToString(), fGlifoP, rCh, cFraco, TC);
-            TextRenderer.DrawText(g, Audio.Glifo(d).ToString(), fGlifo, new Rectangle(colIcone - E(16), r1.Y, E(32), r1.Height),
+            Desenho.Glifo(g, (aberto ? '' : '').ToString(), fGlifoP, rCh, cFraco, TC);
+            Desenho.Glifo(g, Audio.Glifo(d).ToString(), fGlifo, new Rectangle(colIcone - E(16), r1.Y, E(32), r1.Height),
                 d.Padrao ? cAcento : cTexto, TC);
             if (app.BateriaModo == 1 && d.Bateria >= 0)
             {
@@ -4308,12 +4341,12 @@ class Painel : Form
                 {
                     bool tocandoEste = testando == d.Id;
                     if (Sobre(Z_TESTE, d, null, null)) Fundo(g, rTeste, cHover, E(5));
-                    TextRenderer.DrawText(g, tocandoEste ? "\uE767" : "\uE768", fGlifoP, rTeste, tocandoEste ? cAcento : cFraco, TC);
+                    Desenho.Glifo(g, tocandoEste ? "\uE767" : "\uE768", fGlifoP, rTeste, tocandoEste ? cAcento : cFraco, TC);
                 }
                 if (g != null)
                 {
                     if (Sobre(Z_MUDO_D, d, null, null)) Fundo(g, rMudo, cHover, E(5));
-                    TextRenderer.DrawText(g, Audio.GlifoVolume(d.Vol, d.Mudo, d.Fluxo).ToString(), fGlifo, rMudo,
+                    Desenho.Glifo(g, Audio.GlifoVolume(d.Vol, d.Mudo, d.Fluxo).ToString(), fGlifo, rMudo,
                         d.Mudo ? cFraco : cTexto, TC);
                     bool alto = app.AlertaAtivo(d);
                     Slider(g, rSl, d.Vol, d.Mudo, Sobre(Z_SLIDER_D, d, null, null), true, alto);
@@ -4413,7 +4446,7 @@ class Painel : Form
         }
         g.SmoothingMode = SmoothingMode.None;
         int tx = bx + E(21);
-        if (carregando) { TextRenderer.DrawText(g, "\uE945", fGlifoP, new Rectangle(tx - E(2), cy - E(10), E(14), E(20)), cb, TC); tx += E(12); }
+        if (carregando) { Desenho.Glifo(g, "\uE945", fGlifoP, new Rectangle(tx - E(2), cy - E(10), E(14), E(20)), cb, TC); tx += E(12); }
         TextRenderer.DrawText(g, pct + "%", fPequena, new Rectangle(tx, cy - E(10), E(40), E(20)), cb, TF);
     }
 
@@ -4447,7 +4480,7 @@ class Painel : Form
                 var rImg = new Rectangle(x, y + (h - ti) / 2, ti, ti);
                 Bitmap bmp = a.Caminho != null ? Processos.Icone(a.Caminho, ti) : a.Remoto ? IconeRemoto(a) : null;
                 if (bmp != null) { g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.DrawImage(bmp, rImg); }
-                else TextRenderer.DrawText(g, "\uE71D", fGlifoP, rImg, cTexto, TC);
+                else Desenho.Glifo(g, "\uE71D", fGlifoP, rImg, cTexto, TC);
             }
             x += passo;
         }
@@ -4511,7 +4544,7 @@ class Painel : Form
                     ia.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = a.Mudo ? 0.18f : 0.42f });
                     g.DrawImage(bmp, rTras, 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, ia);
                 }
-            else TextRenderer.DrawText(g, "", fGlifo, rTras, Color.FromArgb(90, cTexto), TC);
+            else Desenho.Glifo(g, "", fGlifo, rTras, Color.FromArgb(90, cTexto), TC);
         }
         if (bmp != null)
         {
@@ -4526,14 +4559,14 @@ class Painel : Form
             }
             else g.DrawImage(bmp, rImg);
         }
-        else TextRenderer.DrawText(g, (a.Sistema ? '' : '').ToString(), fGlifo, rImg, a.Mudo ? cFraco : cTexto, TC);
+        else Desenho.Glifo(g, (a.Sistema ? '' : '').ToString(), fGlifo, rImg, a.Mudo ? cFraco : cTexto, TC);
         if (a.Mudo)
         {
             var rb = new Rectangle(rImg.Right - E(11), rImg.Bottom - E(11), E(14), E(14));
             g.SmoothingMode = SmoothingMode.AntiAlias;
             using (var b = new SolidBrush(cCartao)) g.FillEllipse(b, rb);
             g.SmoothingMode = SmoothingMode.None;
-            TextRenderer.DrawText(g, "", fGlifoP, rb, cTexto, TC);
+            Desenho.Glifo(g, "", fGlifoP, rb, cTexto, TC);
         }
 
         // nome + alfinete quando o app tem uma saida so dele
@@ -4542,7 +4575,7 @@ class Painel : Form
         int nw = Math.Min(nomeMax, TextRenderer.MeasureText(g, a.Nome, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width);
         TextRenderer.DrawText(g, a.Nome, fNormal, new Rectangle(xTexto, y + E(3), nomeMax, E(24)), a.Ativo ? cTexto : cFraco, TF);
         if (a.Saida != null)
-            TextRenderer.DrawText(g, "", fGlifoP, new Rectangle(xTexto + nw + E(6), y + E(3), E(14), E(24)), cAcento, TC);
+            Desenho.Glifo(g, "", fGlifoP, new Rectangle(xTexto + nw + E(6), y + E(3), E(14), E(24)), cAcento, TC);
         if (app.MostrarSom && comMed && !arrastado)
             Medidor(g, xTexto + nw + (a.Saida != null ? E(26) : E(10)), y + E(3) + E(12), linhaSobre && movel ? cHover : cCartao,
                 "a|" + d.Id + "|" + a.Exe, null, a.Medidores);
@@ -4551,7 +4584,7 @@ class Painel : Form
         if (movel && (linhaSobre || (app.MenuAberto && menuApp == a)))
         {
             if (Sobre(Z_SAIDA_A, d, a, null) || menuApp == a) Fundo(g, rMais, ControlPaint.Light(cHover, 0.1f), E(4));
-            TextRenderer.DrawText(g, "", fGlifo, rMais, cTexto, TC);
+            Desenho.Glifo(g, "", fGlifo, rMais, cTexto, TC);
         }
 
         Slider(g, rSl, a.Vol, a.Mudo, Sobre(Z_SLIDER_A, d, a, null), false);
@@ -4585,14 +4618,14 @@ class Painel : Form
                 }
             else g.DrawImage(bmp, rImg);
         }
-        else TextRenderer.DrawText(g, "\uE8D6", fGlifoP, rIc, pt.Mudo ? cFraco : cTexto, TC);
+        else Desenho.Glifo(g, "\uE8D6", fGlifoP, rIc, pt.Mudo ? cFraco : cTexto, TC);
         if (pt.Mudo)
         {
             var rb = new Rectangle(rImg.Right - E(9), rImg.Bottom - E(9), E(12), E(12));
             g.SmoothingMode = SmoothingMode.AntiAlias;
             using (var b = new SolidBrush(cCartao)) g.FillEllipse(b, rb);
             g.SmoothingMode = SmoothingMode.None;
-            TextRenderer.DrawText(g, "\uE74F", fGlifoP, rb, cTexto, TC);
+            Desenho.Glifo(g, "\uE74F", fGlifoP, rb, cTexto, TC);
         }
         TextRenderer.DrawText(g, pt.Nome, fPequena, new Rectangle(xt, y + E(2), cw - (xt - x0) - E(16), E(20)),
             pt.Mudo ? cFraco : cTexto, TF);
@@ -4919,7 +4952,7 @@ class Painel : Form
         var ri = new Rectangle(r.X + E(8), r.Y + (r.Height - E(20)) / 2, E(20), E(20));
         Bitmap bmp = arrastoApp.G != null && arrastoApp.G.Caminho != null ? Processos.Icone(arrastoApp.G.Caminho, E(24)) : null;
         if (bmp != null) g.DrawImage(bmp, ri);
-        else TextRenderer.DrawText(g, (arrastoApp.G != null ? '\uE8D6' : arrastoApp.P != null ? '\uE734' : Audio.Glifo(arrastoApp.D)).ToString(), fGlifo, ri, cTexto, TC);
+        else Desenho.Glifo(g, (arrastoApp.G != null ? '\uE8D6' : arrastoApp.P != null ? '\uE734' : Audio.Glifo(arrastoApp.D)).ToString(), fGlifo, ri, cTexto, TC);
         TextRenderer.DrawText(g, txt, fNormal, new Rectangle(r.X + E(36), r.Y, r.Width - E(44), r.Height), cTexto, TF);
     }
 
@@ -9699,7 +9732,7 @@ class Configuracoes : Form
         var rMenu = new Rectangle(E(8), y, E(40), E(36));
         zonas.Add(new Zona { R = rMenu, Pagina = -2 });
         if (sobre != null && sobre.Pagina == -2) Fundo(g, rMenu, cHover, E(5), null);
-        TextRenderer.DrawText(g, "\uE700", fGlifo, rMenu, cTexto, TC);
+        Desenho.Glifo(g, "\uE700", fGlifo, rMenu, cTexto, TC);
         if (comNomes)
         {
             using (var logo = Desenho.Logo(E(20))) g.DrawImage(logo, E(58), y + E(8));
@@ -9713,7 +9746,7 @@ class Configuracoes : Form
             bool sel = i == pagina, hov = sobre != null && sobre.Pagina == i;
             if (sel || hov) Fundo(g, r, sel ? (escuro ? Color.FromArgb(45, 45, 45) : Color.FromArgb(234, 234, 234)) : cHover, E(5), null);
             if (sel) Fundo(g, new Rectangle(r.X, r.Y + E(12), E(3), E(16)), cAcento, E(1), null);
-            TextRenderer.DrawText(g, GlifosPag[i].ToString(), fGlifo, new Rectangle(r.X + E(8), r.Y, E(24), r.Height), cTexto, TC);
+            Desenho.Glifo(g, GlifosPag[i].ToString(), fGlifo, new Rectangle(r.X + E(8), r.Y, E(24), r.Height), cTexto, TC);
             if (comNomes && r.Width - E(56) > E(30))
                 TextRenderer.DrawText(g, Paginas[i], fNormal, new Rectangle(r.X + E(44), r.Y, r.Width - E(52), r.Height), cTexto, TF);
             y += E(44);
@@ -9749,7 +9782,7 @@ class Configuracoes : Form
                 zonas.Add(new Zona { R = rg, L = l });
                 if (sobre != null && sobre.L == l) Fundo(g, rg, cHover, E(5), null);
                 TextRenderer.DrawText(g, l.Titulo, fCab, new Rectangle(x0 + E(2), y, w - E(40), rg.Height), cTexto, TF);
-                TextRenderer.DrawText(g, (l.Ler() ? '\uE70E' : '\uE70D').ToString(), fGlifoP,
+                Desenho.Glifo(g, (l.Ler() ? '\uE70E' : '\uE70D').ToString(), fGlifoP,
                     new Rectangle(rg.Right - E(36), y, E(28), rg.Height), cFraco, TC);
                 y += E(40);
                 continue;
@@ -9800,7 +9833,7 @@ class Configuracoes : Form
                 g.SmoothingMode = SmoothingMode.None;
                 TextRenderer.DrawText(g, (l.Ordem + 1).ToString(), fPequena, rn, primeiro ? cTextoAcento : cTexto, TC);
                 Color ct = l.Ativo ? cTexto : cFraco;
-                TextRenderer.DrawText(g, l.Glifo.ToString(), fGlifo, new Rectangle(x0 + E(60), y, E(28), hp), ct, TC);
+                Desenho.Glifo(g, l.Glifo.ToString(), fGlifo, new Rectangle(x0 + E(60), y, E(28), hp), ct, TC);
                 string est = l.Padrao ? "em uso" : l.Ativo ? "conectado" : "desconectado";
                 TextRenderer.DrawText(g, l.Titulo, fNormal, new Rectangle(x0 + E(98), y + E(8), w - E(300), E(20)), ct, TF);
                 TextRenderer.DrawText(g, est, fPequena, new Rectangle(x0 + E(98), y + E(28), w - E(300), E(16)), l.Padrao ? cAcento : cFraco, TF);
@@ -9808,10 +9841,10 @@ class Configuracoes : Form
                 {
                     bool tocandoEsta = testandoCfg == l.Id;
                     if (sobre != null && sobre.Teste && sobre.L == l) Fundo(g, rT, ControlPaint.Light(cHover, 0.15f), E(5), null);
-                    TextRenderer.DrawText(g, tocandoEsta ? "\uE767" : "\uE768", fGlifoP, rT, tocandoEsta ? cAcento : cTexto, TC);
+                    Desenho.Glifo(g, tocandoEsta ? "\uE767" : "\uE768", fGlifoP, rT, tocandoEsta ? cAcento : cTexto, TC);
                 }
                 if (sobre != null && sobre.Menu && sobre.L == l) Fundo(g, rMenuP, ControlPaint.Light(cHover, 0.15f), E(5), null);
-                TextRenderer.DrawText(g, "\uE76C", fGlifoP, rMenuP, sobre != null && sobre.Menu && sobre.L == l ? cTexto : cFraco, TC);
+                Desenho.Glifo(g, "\uE76C", fGlifoP, rMenuP, sobre != null && sobre.Menu && sobre.L == l ? cTexto : cFraco, TC);
                 y += hp + E(4);
                 continue;
             }
@@ -9839,12 +9872,12 @@ class Configuracoes : Form
             {
                 bool sobreSeta = sobre != null && sobre.Abrir && sobre.L == l;
                 if (sobreSeta) Fundo(g, rAbrir, ControlPaint.Light(cHover, 0.15f), E(5), null);
-                TextRenderer.DrawText(g, (aberta ? '' : '').ToString(), fGlifoP, rAbrir, sobreSeta ? cTexto : cFraco, TC | xf);
+                Desenho.Glifo(g, (aberta ? '' : '').ToString(), fGlifoP, rAbrir, sobreSeta ? cTexto : cFraco, TC | xf);
             }
             int tx = grudaCima ? x0 + E(54) : x0 + E(20);
             if (l.Glifo != '\0')
             {
-                TextRenderer.DrawText(g, l.Glifo.ToString(), fGlifo, new Rectangle(x0 + E(14), y, E(28), h), cTexto, TC | xf);
+                Desenho.Glifo(g, l.Glifo.ToString(), fGlifo, new Rectangle(x0 + E(14), y, E(28), h), cTexto, TC | xf);
                 tx = x0 + E(54);
             }
             int dirW = E(200);
@@ -9868,7 +9901,7 @@ class Configuracoes : Form
             {
                 char seta = l.Glifo == '' ? '' : '';
                 int offB = temFilhas ? E(44) : 0;   // com a seta de abrir/fechar, o valor fica a esquerda dela
-                if (l.Glifo != '') TextRenderer.DrawText(g, seta.ToString(), fGlifoP, new Rectangle(r.Right - E(40) - offB, y, E(24), h), cFraco, TC | xf);
+                if (l.Glifo != '') Desenho.Glifo(g, seta.ToString(), fGlifoP, new Rectangle(r.Right - E(40) - offB, y, E(24), h), cFraco, TC | xf);
                 string v = l.Valor();
                 if (v.Length > 0)
                     TextRenderer.DrawText(g, v, fNormal, new Rectangle(r.Right - E(44) - dirW - offB, y, dirW, h), cFraco,
