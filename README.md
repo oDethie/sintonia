@@ -85,6 +85,8 @@ No PC que está sendo controlado, o ícone do Sintonia perto do relógio ganha u
 - O PC controlado só aceita mudar volume, mudo, saída padrão e saída de apps. Não abre arquivos, não roda programas, não lê nada além da lista de som.
 - O teste do protocolo pode ser rodado por qualquer um: `Sintonia.exe --testerede resultado.txt`.
 
+**No painel:** **Tab** (ou **Ctrl+1, 2, 3**) troca entre os PCs; o painel abre no último PC visto (desligável). O botão do PC mostra o sinal da conexão (3 tracinhos = ótima) e o clique direito mostra o tempo de resposta. Com "Mostrar o som tocando" ligado, as barrinhas aparecem também no microfone do outro PC quando algum app está usando o mic.
+
 **Desempenho:** nada é enviado no dia a dia. A conexão só abre quando o painel mostra o outro PC (uma atualização a cada 3 s) e fecha junto com o painel. Com "Pode ser controlado" ligado, o Sintonia fica só esperando, parado: **0 ms de CPU** e a mesma memória.
 
 ### Atualizações

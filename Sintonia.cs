@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.7.7.0")]
-[assembly: AssemblyFileVersion("1.7.7.0")]
+[assembly: AssemblyVersion("1.8.0.0")]
+[assembly: AssemblyFileVersion("1.8.0.0")]
 
 static class Program
 {
@@ -2499,7 +2499,10 @@ class Painel : Form
         SetForegroundWindow(Handle);
         Activate();
         tRecarregar.Start();
-        if (Alvo != null) { estadoRemoto = null; remotoFalhou = false; PedirEstado(); }
+        if (!app.LembrarPc) Alvo = null;
+        else if (Alvo == null && !string.IsNullOrEmpty(app.UltimoPc) && app.Controlador) Alvo = app.ParPorId(app.UltimoPc);
+        pcPos = -1f;
+        if (Alvo != null) { estadoRemoto = null; remotoFalhou = false; PedirEstado(); Montar(null); Posicionar(); }
         if (app.Animacoes) Animar();
         if (app.MostrarSom) tSom.Start();
     }
@@ -2837,6 +2840,25 @@ class Painel : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys k)
     {
+        if (app.Controlador && arrastando == null && arrastoApp == null)
+        {
+            var pcs = app.Controlados();
+            if (pcs.Count > App.MaxPCs) pcs.RemoveRange(App.MaxPCs, pcs.Count - App.MaxPCs);
+            if (pcs.Count > 0)
+            {
+                int atual = IndiceAlvo(), n = pcs.Count + 1, ir = -1;
+                if (k == Keys.Tab) ir = (atual + 1) % n;
+                else if (k == (Keys.Tab | Keys.Shift)) ir = (atual + n - 1) % n;
+                else if (k == (Keys.D1 | Keys.Control) || k == (Keys.NumPad1 | Keys.Control)) ir = 0;
+                else if (k == (Keys.D2 | Keys.Control) || k == (Keys.NumPad2 | Keys.Control)) ir = 1;
+                else if (k == (Keys.D3 | Keys.Control) || k == (Keys.NumPad3 | Keys.Control)) ir = 2;
+                if (ir >= 0)
+                {
+                    if (ir < n && ir != atual) Clique(new Zona { Tipo = Z_PC, Id = ir == 0 ? "" : pcs[ir - 1].Id });
+                    return true;
+                }
+            }
+        }
         if ((k == Keys.Left || k == Keys.Right) && arrastando == null)
         {
             // com o mouse em cima de uma barra: setas mudam de 1 em 1
@@ -2989,8 +3011,26 @@ class Painel : Form
                 bool atualizandoEste = pc != null && atualizandoPc == pc.Id;
                 string txt = pc == null ? "Este PC" : atualizandoEste ? "Atualizando…" : pc.Nome;
                 var fT = ativo ? fNegrito : fNormal;
-                int tw = Math.Min(r.Width - E(40), TextRenderer.MeasureText(g, txt, fT, Size.Empty, TextFormatFlags.NoPadding).Width);
-                int x0 = r.X + (r.Width - (tw + E(24))) / 2;
+                int lat = pc != null && remoto != null && remoto.Par.Id == pc.Id && !remotoFalhou && estadoRemoto != null ? remoto.Latencia : 0;
+                int wSinal = lat > 0 ? E(16) : 0;
+                int tw = Math.Min(r.Width - E(40) - wSinal, TextRenderer.MeasureText(g, txt, fT, Size.Empty, TextFormatFlags.NoPadding).Width);
+                int x0 = r.X + (r.Width - (tw + E(24) + wSinal)) / 2;
+                if (lat > 0)
+                {
+                    // sinal da conexao: 3 tracinhos = otima, 2 = boa, 1 = lenta
+                    int nivel = lat <= 20 ? 3 : lat <= 80 ? 2 : 1;
+                    int bx = x0 + E(24) + tw + E(7), by = r.Y + r.Height / 2 + E(5);
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    for (int ib = 0; ib < 3; ib++)
+                    {
+                        int hb = E(4) + ib * E(3);
+                        Color cb = ib < nivel ? (nivel == 1 ? Color.FromArgb(232, 163, 23) : ativo ? cTexto : cFraco) : Color.FromArgb(90, cFraco);
+                        using (var b = new SolidBrush(cb))
+                        using (var pth = Desenho.Arred(new RectangleF(bx + ib * E(4), by - hb, E(2.5f), hb), E(1)))
+                            g.FillPath(b, pth);
+                    }
+                    g.SmoothingMode = SmoothingMode.None;
+                }
                 char gl = pc == null ? '\uE7F4' : atualizandoEste ? '\uE895' : '\uE7F8';
                 TextRenderer.DrawText(g, gl.ToString(), fGlifoP, new Rectangle(x0, r.Y, E(16), r.Height), ativo ? cTexto : cFraco, TC);
                 TextRenderer.DrawText(g, txt, fT, new Rectangle(x0 + E(24), r.Y, tw + E(2), r.Height), ativo ? cTexto : cFraco, TF);
@@ -3000,7 +3040,7 @@ class Painel : Form
                     g.SmoothingMode = SmoothingMode.AntiAlias;
                     float dd = E(7);
                     using (var b = new SolidBrush(Color.FromArgb(232, 163, 23)))
-                        g.FillEllipse(b, Math.Min(r.Right - E(10), x0 + E(24) + tw + E(6)), r.Y + E(9), dd, dd);
+                        g.FillEllipse(b, Math.Min(r.Right - E(10), x0 + E(24) + tw + wSinal + E(6)), r.Y + E(9), dd, dd);
                     g.SmoothingMode = SmoothingMode.None;
                 }
             }
@@ -3984,6 +4024,7 @@ class Painel : Form
                     niveisRemotos.Clear(); pedindoNiveis = false; semNiveis = false; historico.Clear();
                     abertura.Clear(); rolagem = 0;
                     int para = IndiceAlvo();
+                    app.UltimoPc = Alvo != null ? Alvo.Id : ""; app.SalvarConfig();
                     Transicao(para > de ? 1 : -1);
                     Recarregar();
                     if (Alvo != null) PedirEstado();
@@ -4120,6 +4161,11 @@ class Painel : Form
             string estado = !ativo ? "" : remotoFalhou ? "  ·  sem conexão" : estadoRemoto != null ? "  ·  conectado" : "  ·  conectando…";
             menu.Items.Add(new ToolStripLabel(pc.Nome + estado) { Tag = "fraco" });
             if (!string.IsNullOrEmpty(pc.UltimoIP)) menu.Items.Add(new ToolStripLabel("Endereço " + pc.UltimoIP) { Tag = "fraco" });
+            if (ativo && remoto != null && remoto.Par.Id == pc.Id && remoto.Latencia > 0 && !remotoFalhou)
+            {
+                int lt = remoto.Latencia;
+                menu.Items.Add(new ToolStripLabel("Conexão: " + lt + " ms  ·  " + (lt <= 20 ? "ótima" : lt <= 80 ? "boa" : "lenta")) { Tag = "fraco" });
+            }
             if (pc.Versao != null)
             {
                 string atual = Atualizador.Atual.ToString(3);
@@ -4949,6 +4995,8 @@ class Remoto
     volatile bool fim;
     Canal canal;
 
+    public volatile int Latencia;   // ms de ida e volta (0 = ainda nao sabe)
+
     public Remoto(App a, ParPC p, Control u)
     {
         app = a; Par = p; ui = u;
@@ -4973,8 +5021,11 @@ class Remoto
                 try
                 {
                     if (canal == null) canal = Abrir();
+                    var sw = Stopwatch.StartNew();
                     canal.Enviar(it.Key);
                     r = canal.Receber();
+                    int ms = (int)sw.ElapsedMilliseconds;
+                    Latencia = Latencia <= 0 ? Math.Max(1, ms) : Math.Max(1, (Latencia * 3 + ms) / 4);   // media suave
                 }
                 catch { if (canal != null) canal.Dispose(); canal = null; }
             }
@@ -5296,6 +5347,8 @@ class App : ApplicationContext
     // ---- outros PCs (controle pela rede) ----
     public bool Controlador;                 // este PC controla outros (padrao: desligado)
     public bool AtualizarSozinho = true;
+    public bool LembrarPc = true;     // o painel abre no ultimo PC visto (inclusive depois de reiniciar)
+    public string UltimoPc;
     // prioridade: lista ordenada de aparelhos (saidas e microfones), incluindo os desconectados
     public bool PrioridadeAuto;
     public readonly List<string>[] Prioridade = { new List<string>(), new List<string>() };
@@ -6429,9 +6482,12 @@ class App : ApplicationContext
             Audio.Liberar(remCache);
             bool comMed = Audio.ComMedidor;
             Audio.ComMedidor = true;      // o outro PC pode querer as barrinhas do som
-            try { remCache = Audio.Listar(0, true, Inativos, Nomes); }
+            try
+            {
+                remCache = Audio.Listar(0, true, Inativos, Nomes);
+                remCache.AddRange(Audio.Listar(1, false, false, Nomes));   // microfones (barrinhas quando um app usa o mic)
+            }
             finally { Audio.ComMedidor = comMed; }
-            remCache.AddRange(Audio.Listar(1, false, false, Nomes));
             remCacheT = DateTime.Now;
         }
         tRemCache.Stop(); tRemCache.Start();     // sem pedidos por 15 s: solta tudo
@@ -6570,7 +6626,6 @@ class App : ApplicationContext
                         float v;
                         foreach (var d in ListaRemota(false))
                         {
-                            if (d.Fluxo != 0) continue;
                             if (d.Medidor != null && d.Medidor.GetPeakValue(out v) == 0 && v > 0.0005f) sb.Append("d|").Append(T(d.Id)).Append('\t').Append(N(v)).Append('\n');
                             foreach (var a in d.Apps)
                             {
@@ -6991,6 +7046,8 @@ class App : ApplicationContext
                     case "som": MostrarSom = v == "1"; break;
                     case "fixar": FixarBandeja = v == "1"; break;
                     case "controlador": Controlador = v == "1"; break;
+                    case "lembrar_pc": LembrarPc = v == "1"; break;
+                    case "ultimo_pc": UltimoPc = v; break;
                     case "atualizar": AtualizarSozinho = v == "1"; break;
                     case "prioridade_auto": PrioridadeAuto = v == "1"; break;
                     case "prio0": case "prio1":
@@ -7112,6 +7169,7 @@ class App : ApplicationContext
                 "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
+            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
             l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0)); l.Add("atualizar=" + (AtualizarSozinho ? 1 : 0));
             l.Add("prioridade_auto=" + (PrioridadeAuto ? 1 : 0));
             l.Add("prio0=" + string.Join(";", Prioridade[0])); l.Add("prio1=" + string.Join(";", Prioridade[1]));
@@ -7684,6 +7742,9 @@ class Configuracoes : Form
                  "com tudo criptografado, e só depois de parear com um código. Nada é enviado no dia a dia: só quando o painel mostra o outro PC.");
             Cab("Este PC");
             Chave("Controlar outros PCs", "Mostra no painel um botão para cada PC pareado, para mudar o som dele daqui", () => app.Controlador, v => app.DefinirControlador(v));
+            if (app.Controlador)
+                Chave("Abrir no último PC visto", "O painel abre direto no PC que você estava vendo. Desligado, abre sempre em \"Este PC\". Tab ou Ctrl+1, 2, 3 trocam de PC com o painel aberto",
+                    () => app.LembrarPc, v => { app.LembrarPc = v; app.SalvarConfig(); });
             Chave("Pode ser controlado por outros PCs", "Fica esperando, parado, um PC pareado pedir algo. Na primeira vez o Windows pergunta se libera o Sintonia: marque só \"Redes privadas\"",
                 () => app.Receptor, v => app.Receptor = v);
             if (app.Receptor && app.ReceptorAtivo)
