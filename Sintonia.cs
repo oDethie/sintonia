@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.15.0")]
-[assembly: AssemblyFileVersion("1.9.15.0")]
+[assembly: AssemblyVersion("1.9.16.0")]
+[assembly: AssemblyFileVersion("1.9.16.0")]
 
 static class Program
 {
@@ -4311,7 +4311,7 @@ class Painel : Form
         var z = ZonaEm(e.Location);
         if (z == null) return;
         if (z.Tipo == Z_MIDIA_CARD) { arrastoMidia = true; xMidia = e.X; dxMidia = 0; midiaDesl = 0; Capture = true; return; }   // arrastar de lado
-        if (z.Tipo == Z_SLIDER_D || z.Tipo == Z_SLIDER_A || z.Tipo == Z_SLIDER_P) { arrastando = z; Capture = true; DefinirValor(z, e.X); return; }
+        if (z.Tipo == Z_SLIDER_D || z.Tipo == Z_SLIDER_A || z.Tipo == Z_SLIDER_P) { arrastando = z; Capture = true; PrepararArrastoBarra(z); DefinirValor(z, e.X); return; }
         apertada = z;
         arrastoInicio = e.Location;
     }
@@ -4430,13 +4430,54 @@ class Painel : Form
         Invalidate();
     }
 
+    // arrastando uma barra: so ela e o numero sao redesenhados (o painel inteiro so ao soltar) -> acompanha o mouse rapido
+    Color corFundoBarra; bool temFundoBarra;
+
     void DefinirValor(Zona z, int mx)
     {
         float raio = E(10);
         float v = (mx - z.R.Left - raio) / (z.R.Width - raio * 2);
         if (z.Tipo == Z_SLIDER_P) AplicarParte(z.G, z.F, v);
         else if (z.G != null) AplicarApp(z.G, v); else AplicarDisp(z.D, v);
-        Invalidate();
+        if (arrastando == z && temFundoBarra) RedesenharBarra(z); else Invalidate();
+    }
+
+    // cor do fundo atras da barra (cartao ou linha com o mouse em cima), pega uma vez ao comecar a arrastar
+    void PrepararArrastoBarra(Zona z)
+    {
+        temFundoBarra = false;
+        try
+        {
+            var pt = PointToScreen(new Point(z.R.X + E(2), z.R.Y + E(2)));
+            using (var b = new Bitmap(1, 1))
+            {
+                using (var gb = Graphics.FromImage(b)) gb.CopyFromScreen(pt, Point.Empty, new Size(1, 1));
+                corFundoBarra = b.GetPixel(0, 0); temFundoBarra = true;
+            }
+        }
+        catch { temFundoBarra = false; }
+    }
+
+    void RedesenharBarra(Zona z)
+    {
+        float vol; bool mudo; bool alto = false; Font f = fPequena;
+        if (z.Tipo == Z_SLIDER_P) { if (z.F < 0 || z.F >= z.G.Partes.Count) return; vol = z.G.Partes[z.F].Vol; mudo = z.G.Partes[z.F].Mudo; }
+        else if (z.G != null) { vol = z.G.Vol; mudo = z.G.Mudo; }
+        else { vol = z.D.Vol; mudo = z.D.Mudo; alto = app.AlertaAtivo(z.D); f = fNegrito; }
+        var r = new Rectangle(z.R.X, z.R.Y, z.R.Width + E(40), z.R.Height);
+        if (!ClientRectangle.Contains(r)) { Invalidate(); return; }
+        using (var bmp = new Bitmap(r.Width, r.Height))
+        {
+            using (var gb = Graphics.FromImage(bmp))
+            {
+                gb.Clear(corFundoBarra);
+                gb.TranslateTransform(-r.X, -r.Y);
+                Slider(gb, z.R, vol, mudo, true, z.Tipo == Z_SLIDER_D, alto);
+                TextRenderer.DrawText(gb, ((int)Math.Round(vol * 100)).ToString(), f, new Rectangle(z.R.Right, z.R.Y, E(40), z.R.Height),
+                    mudo ? cFraco : alto ? cAlto : cTexto, TC);
+            }
+            using (var g = CreateGraphics()) g.DrawImageUnscaled(bmp, r.Location);
+        }
     }
 
     void AplicarDisp(Disp d, float v)
