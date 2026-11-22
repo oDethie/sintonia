@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.7.4.0")]
-[assembly: AssemblyFileVersion("1.7.4.0")]
+[assembly: AssemblyVersion("1.7.5.0")]
+[assembly: AssemblyFileVersion("1.7.5.0")]
 
 static class Program
 {
@@ -2195,8 +2195,10 @@ class Painel : Form
             pedindoEstado = false;
             if (alvo != Alvo) return;
             bool primeiro = estadoRemoto == null;
+            if (r == null && atualizandoPc == alvo.Id && estadoRemoto != null) return;   // reiniciando para atualizar: mantem a tela
             if (r == null) { remotoFalhou = true; } else { remotoFalhou = false; estadoRemoto = r; }
             if (primeiro) Transicao(0);
+            if (primeiro && r != null && alvo.Versao == null) PedirVersao(alvo);
             Recarregar();
         });
     }
@@ -2555,7 +2557,10 @@ class Painel : Form
     readonly Timer tSom = new Timer { Interval = 40 };   // 25 quadros por segundo
     // outro PC: niveis pedidos pela rede so enquanto o painel mostra ele (e a opcao esta ligada)
     readonly Dictionary<string, float> niveisRemotos = new Dictionary<string, float>();
-    bool pedindoNiveis, semNiveis; DateTime ultimoNiveis;   // semNiveis: o outro PC e de uma versao que nao manda os niveis
+    bool pedindoNiveis, semNiveis; DateTime ultimoNiveis;
+    // atualizar o outro PC a distancia
+    string atualizandoPc; DateTime atualizandoDesde;
+    Timer tAtualizandoPc;   // semNiveis: o outro PC e de uma versao que nao manda os niveis
     const int BARRAS = 5;
 
     int LarguraMed() { return BARRAS * E(3) + (BARRAS - 1) * E(2); }
@@ -2633,6 +2638,56 @@ class Painel : Form
             }
         }
         finally { if (g != null) g.Dispose(); }
+    }
+
+    static bool Atrasada(ParPC pc)
+    {
+        if (pc == null || pc.Versao == null) return false;
+        Version v;
+        return pc.Versao == "" || (Version.TryParse(pc.Versao, out v) && v < Atualizador.Atual);
+    }
+
+    void PedirVersao(ParPC pc)
+    {
+        GarantirRemoto();
+        remoto.Pedir("versao", r =>
+        {
+            if (r == null) return;
+            Version v;
+            pc.Versao = Version.TryParse(r, out v) ? r : "";
+            if (atualizandoPc == pc.Id && !Atrasada(pc))
+            {
+                atualizandoPc = null;
+                if (tAtualizandoPc != null) tAtualizandoPc.Stop();
+                estadoRemoto = null; PedirEstado();       // recarrega a tela com a versao nova
+            }
+            Invalidate();
+        });
+    }
+
+    void AtualizarOutroPc(ParPC pc)
+    {
+        if (pc == null || Alvo == null || Alvo.Id != pc.Id) return;
+        GarantirRemoto();
+        remoto.Pedir("atualizar", r =>
+        {
+            if (r == "jogo") { MessageBox.Show(pc.Nome + " está com um jogo em tela cheia. Tente de novo depois.", "Sintonia"); return; }
+            if (r != "ok") return;
+            atualizandoPc = pc.Id; atualizandoDesde = DateTime.Now;
+            if (tAtualizandoPc == null)
+            {
+                tAtualizandoPc = new Timer { Interval = 2500 };
+                tAtualizandoPc.Tick += (s2, e2) =>
+                {
+                    var alvo = Alvo;
+                    if (atualizandoPc == null || alvo == null || alvo.Id != atualizandoPc || (DateTime.Now - atualizandoDesde).TotalSeconds > 120)
+                    { atualizandoPc = null; tAtualizandoPc.Stop(); Invalidate(); return; }
+                    PedirVersao(alvo);          // quando ele voltar na versao nova, termina
+                };
+            }
+            tAtualizandoPc.Start();
+            Invalidate();
+        });
     }
 
     // ~8 vezes por segundo, um pedido pequeno (so os niveis); um por vez
@@ -2929,12 +2984,23 @@ class Painel : Form
                 bool ativo = Math.Abs(pcPos - i) < 0.5f;
                 bool hov = sobre != null && sobre.Tipo == Z_PC && sobre.Id == (pc == null ? "" : pc.Id);
                 if (hov && !ativo) Fundo(g, new Rectangle(r.X + E(2), r.Y + ins + E(2), r.Width - E(4), r.Height - ins * 2 - E(4)), cHover, E(4));
-                string txt = pc == null ? "Este PC" : pc.Nome;
+                bool atualizandoEste = pc != null && atualizandoPc == pc.Id;
+                string txt = pc == null ? "Este PC" : atualizandoEste ? "Atualizando…" : pc.Nome;
                 var fT = ativo ? fNegrito : fNormal;
                 int tw = Math.Min(r.Width - E(40), TextRenderer.MeasureText(g, txt, fT, Size.Empty, TextFormatFlags.NoPadding).Width);
                 int x0 = r.X + (r.Width - (tw + E(24))) / 2;
-                TextRenderer.DrawText(g, (pc == null ? '\uE7F4' : '\uE7F8').ToString(), fGlifoP, new Rectangle(x0, r.Y, E(16), r.Height), ativo ? cTexto : cFraco, TC);
+                char gl = pc == null ? '\uE7F4' : atualizandoEste ? '\uE895' : '\uE7F8';
+                TextRenderer.DrawText(g, gl.ToString(), fGlifoP, new Rectangle(x0, r.Y, E(16), r.Height), ativo ? cTexto : cFraco, TC);
                 TextRenderer.DrawText(g, txt, fT, new Rectangle(x0 + E(24), r.Y, tw + E(2), r.Height), ativo ? cTexto : cFraco, TF);
+                if (pc != null && !atualizandoEste && Atrasada(pc))
+                {
+                    // bolinha amarela: versao mais antiga que a deste PC
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    float dd = E(7);
+                    using (var b = new SolidBrush(Color.FromArgb(232, 163, 23)))
+                        g.FillEllipse(b, Math.Min(r.Right - E(10), x0 + E(24) + tw + E(6)), r.Y + E(9), dd, dd);
+                    g.SmoothingMode = SmoothingMode.None;
+                }
             }
             y += rB.Height + E(12);
         }
@@ -4052,6 +4118,23 @@ class Painel : Form
             string estado = !ativo ? "" : remotoFalhou ? "  ·  sem conexão" : estadoRemoto != null ? "  ·  conectado" : "  ·  conectando…";
             menu.Items.Add(new ToolStripLabel(pc.Nome + estado) { Tag = "fraco" });
             if (!string.IsNullOrEmpty(pc.UltimoIP)) menu.Items.Add(new ToolStripLabel("Endereço " + pc.UltimoIP) { Tag = "fraco" });
+            if (pc.Versao != null)
+            {
+                string atual = Atualizador.Atual.ToString(3);
+                if (pc.Versao == "")
+                    menu.Items.Add(new ToolStripLabel("Versão antiga: atualize no próprio PC uma vez") { Tag = "fraco" });
+                else
+                    menu.Items.Add(new ToolStripLabel("Versão " + pc.Versao + (Atrasada(pc) ? "  ·  este PC tem a " + atual : "  ·  em dia")) { Tag = "fraco" });
+                if (atualizandoPc == pc.Id)
+                    menu.Items.Add(new ToolStripLabel("Atualizando…") { Tag = "fraco" });
+                else if (ativo && pc.Versao != "" && Atrasada(pc))
+                {
+                    var at = new ToolStripMenuItem("Atualizar agora para a " + atual);
+                    var alvoPc = pc;
+                    at.Click += (s, e) => AtualizarOutroPc(alvoPc);
+                    menu.Items.Add(at);
+                }
+            }
             if (!ativo)
             {
                 var ver = new ToolStripMenuItem("Mostrar este PC");
@@ -4353,6 +4436,7 @@ class ParPC
     public string Id, Nome, ChavePub, UltimoIP;
     public bool EuControlo;   // este PC controla o outro
     public bool MeControla;   // o outro PC pode controlar este
+    public string Versao;     // versao do Sintonia dele (descoberta ao conectar; "" = antiga, nao informa)
 }
 
 static class Rede
@@ -6468,6 +6552,14 @@ class App : ApplicationContext
                         Audio.DefinirPadrao(c[1]);
                         remCache = null;
                         PainelMudou();
+                        return "ok";
+                    }
+                case "versao":
+                    return Atualizador.Atual.ToString(3);
+                case "atualizar":
+                    {
+                        if (TelaCheiaAtiva()) return "jogo";       // alguem jogando aqui: nao atrapalha
+                        ProcurarAtualizacao(true);
                         return "ok";
                     }
                 case "niveis":
