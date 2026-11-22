@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.7.1.0")]
-[assembly: AssemblyFileVersion("1.7.1.0")]
+[assembly: AssemblyVersion("1.7.2.0")]
+[assembly: AssemblyFileVersion("1.7.2.0")]
 
 static class Program
 {
@@ -5186,6 +5186,9 @@ class App : ApplicationContext
     public readonly Dictionary<string, Conhecido> Conhecidos = new Dictionary<string, Conhecido>(StringComparer.OrdinalIgnoreCase);
     readonly HashSet<string>[] ultimosAtivos = { null, null };
     readonly Timer tPrio = new Timer { Interval = 1500 };
+    // escolha feita a mao sobe para 1o; trocas do Windows (aparelho saiu) ou do proprio Sintonia nao contam
+    DateTime ultimoEventoAparelho = DateTime.MinValue, ultimaTrocaAuto = DateTime.MinValue;
+    readonly string[] ultimoPadrao = new string[2];
     public string EstadoAtualizacao = "";     // texto para as Configuracoes
     Atualizador.Nova novaVersao; byte[] novaBin;
     readonly Timer tAtualizacao = new Timer { Interval = 90 * 1000 };   // 1a vez 90 s depois de abrir; depois a cada 12 h
@@ -5312,7 +5315,8 @@ class App : ApplicationContext
         vigia = new Vigia(
             tipo => Postar(() =>
             {
-                if (tipo == 1) { tPrio.Stop(); tPrio.Start(); }   // aparelho entrou/saiu: confere a prioridade (espera o Bluetooth assentar)
+                if (tipo == 1) { ultimoEventoAparelho = DateTime.Now; tPrio.Stop(); tPrio.Start(); }   // aparelho entrou/saiu: confere a prioridade (espera o Bluetooth assentar)
+                if (tipo == 2) PadraoMudou();
                 if (tipo != 3) { recarregarPainel = true; ultimoId = null; }
                 if (!tAtualizar.Enabled) tAtualizar.Start();
             }),
@@ -6042,18 +6046,41 @@ class App : ApplicationContext
     {
         for (int f = 0; f < 2; f++)
         {
+            if (ultimoPadrao[f] == null) ultimoPadrao[f] = Audio.PadraoId(f);
             var ativos = AtualizarConhecidos(f);
             var antes = ultimosAtivos[f];
             ultimosAtivos[f] = ativos;
             if (!PrioridadeAuto || (antes != null && antes.SetEquals(ativos))) continue;
             string melhor = Prioridade[f].Find(id => ativos.Contains(id));
             if (melhor == null || Politica.Igual(melhor, Audio.PadraoId(f))) continue;
+            ultimaTrocaAuto = DateTime.Now;
+            ultimoPadrao[f] = melhor;
             Audio.DefinirPadrao(melhor);
             Conhecido k = null; Conhecidos.TryGetValue(melhor, out k);
             string nome = NomeConhecido(melhor);
             Avisar(f == 0 ? Audio.Glifo(new Disp { Fluxo = 0, Forma = k != null ? k.Forma : 0 }) : '\uE720', "Usando " + nome);
         }
         AtualizarConfig();
+    }
+
+    // a saida/microfone padrao mudou: se foi escolha da pessoa (e a troca automatica esta ligada), sobe para 1o
+    void PadraoMudou()
+    {
+        for (int f = 0; f < 2; f++)
+        {
+            string pad = Audio.PadraoId(f);
+            if (pad == null || Politica.Igual(pad, ultimoPadrao[f])) continue;
+            ultimoPadrao[f] = pad;
+            if (!PrioridadeAuto) continue;
+            var agora = DateTime.Now;
+            if ((agora - ultimoEventoAparelho).TotalSeconds < 5 || (agora - ultimaTrocaAuto).TotalSeconds < 5) continue;
+            var l = Prioridade[f];
+            int i = l.FindIndex(x => Politica.Igual(x, pad));
+            if (i <= 0) continue;
+            string id = l[i]; l.RemoveAt(i); l.Insert(0, id);
+            SalvarConfig();
+            AtualizarConfig();
+        }
     }
 
     public void MoverPrioridade(int fluxo, string id, int para)
@@ -7176,7 +7203,7 @@ class Configuracoes : Form
         public Action<Rectangle> Clicar;
         public string Id; public int Fluxo, Ordem; public bool Ativo, Padrao;   // L_PRIO
     }
-    class Zona { public Rectangle R; public int Pagina = -1; public Linha L; public bool Teste; }
+    class Zona { public Rectangle R; public int Pagina = -1; public Linha L; public bool Teste, Menu; }
     const int L_CAB = 0, L_CHAVE = 1, L_BOTAO = 2, L_NOTA = 3, L_GRUPO = 4, L_PRIO = 5;
     // arrastar na lista de prioridade
     Linha arrastoL; int arrastoY0, arrastoPara = -1; bool arrastandoL, soltou;
@@ -7451,9 +7478,9 @@ class Configuracoes : Form
         else if (pagina == 5)
         {
             Nota("Quando um aparelho conecta ou desconecta (ex.: o fone Bluetooth), o Sintonia passa a usar o primeiro da lista que estiver conectado. " +
-                 "Se você trocar à mão, ele respeita até um aparelho entrar ou sair. Arraste para mudar a ordem; ▶ toca um som de teste naquela saída.");
+                 "Arraste para mudar a ordem; ▶ toca um som de teste naquela saída.");
             Chave("Trocar sozinho pela prioridade", app.PrioridadeAuto
-                    ? "Ligado: o 1º conectado vira a saída (e o microfone) padrão. Arrastar um aparelho para o 1º lugar já troca na hora"
+                    ? "Ligado: o 1º conectado vira a saída (e o microfone) padrão. Arrastar para o 1º lugar ou escolher uma saída à mão já a coloca em 1º"
                     : "Desligado: a ordem fica guardada, mas nada troca sozinho",
                 () => app.PrioridadeAuto, v => app.DefinirPrioridadeAuto(v));
             foreach (var fluxo in new[] { 0, 1 })
@@ -7798,6 +7825,8 @@ class Configuracoes : Form
                 bool comTeste = l.Fluxo == 0 && l.Ativo;
                 var rT = new Rectangle(rp.Right - E(84), y + (hp - E(34)) / 2, E(34), E(34));
                 if (comTeste) zonas.Add(new Zona { R = rT, L = l, Teste = true });
+                var rMenuP = new Rectangle(rp.Right - E(46), y + (hp - E(34)) / 2, E(36), E(34));
+                zonas.Add(new Zona { R = rMenuP, L = l, Menu = true });
                 zonas.Add(new Zona { R = rp, L = l });
                 prioRects.Add(new KeyValuePair<Rectangle, Linha>(rp, l));
                 bool hovp = sobre != null && sobre.L == l && !arrastandoL;
@@ -7830,7 +7859,8 @@ class Configuracoes : Form
                     if (sobre != null && sobre.Teste && sobre.L == l) Fundo(g, rT, ControlPaint.Light(cHover, 0.15f), E(5), null);
                     TextRenderer.DrawText(g, tocandoEsta ? "\uE767" : "\uE768", fGlifoP, rT, tocandoEsta ? cAcento : cTexto, TC);
                 }
-                TextRenderer.DrawText(g, "\uE76C", fGlifoP, new Rectangle(rp.Right - E(40), y, E(24), hp), cFraco, TC);
+                if (sobre != null && sobre.Menu && sobre.L == l) Fundo(g, rMenuP, ControlPaint.Light(cHover, 0.15f), E(5), null);
+                TextRenderer.DrawText(g, "\uE76C", fGlifoP, rMenuP, sobre != null && sobre.Menu && sobre.L == l ? cTexto : cFraco, TC);
                 y += hp + E(4);
                 continue;
             }
@@ -7928,7 +7958,7 @@ class Configuracoes : Form
         soltou = false;
         if (e.Button != MouseButtons.Left) return;
         var z = ZonaEm(e.Location);
-        if (z != null && z.L != null && z.L.Tipo == L_PRIO && !z.Teste) { arrastoL = z.L; arrastoY0 = e.Y; arrastandoL = false; }
+        if (z != null && z.L != null && z.L.Tipo == L_PRIO && !z.Teste && !z.Menu) { arrastoL = z.L; arrastoY0 = e.Y; arrastandoL = false; }
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -7964,11 +7994,11 @@ class Configuracoes : Form
             }
         }
         var z = ZonaEm(e.Location);
-        bool mudou = (z == null) != (sobre == null) || (z != null && (z.L != sobre.L || z.Pagina != sobre.Pagina || z.Teste != sobre.Teste));
+        bool mudou = (z == null) != (sobre == null) || (z != null && (z.L != sobre.L || z.Pagina != sobre.Pagina || z.Teste != sobre.Teste || z.Menu != sobre.Menu));
         sobre = z;
         if (mudou)
         {
-            Cursor = z == null ? Cursors.Default : (z.L != null && z.L.Tipo == L_PRIO && !z.Teste) ? Cursors.SizeAll : Cursors.Hand;
+            Cursor = z == null ? Cursors.Default : (z.L != null && z.L.Tipo == L_PRIO && !z.Teste && !z.Menu) ? Cursors.SizeAll : Cursors.Hand;
             Invalidate();
         }
     }
