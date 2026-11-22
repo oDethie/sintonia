@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.19.0")]
-[assembly: AssemblyFileVersion("1.9.19.0")]
+[assembly: AssemblyVersion("1.9.21.0")]
+[assembly: AssemblyFileVersion("1.9.21.0")]
 
 static class Program
 {
@@ -67,6 +67,7 @@ static class Program
         if (args.Length == 5 && args[0] == "--testemover") { TesteMover(args[1], args[2], args[3], args[4]); return; }
         if (args.Length == 2 && args[0] == "--testeopcoes") { App.TesteOpcoes(args[1]); return; }
         if (args.Length == 2 && args[0] == "--testerede") { TesteRede(args[1]); return; }
+        if (args.Length == 2 && args[0] == "--testeuso") { Audio.DiagUso = true; var l = Audio.Listar(1, true, false, null); File.WriteAllText(args[1], App.EstadoTexto(l) + "\nassinatura=" + Audio.AssinaturaUso()); Audio.Liberar(l); return; }
         if (args.Length == 2 && args[0] == "--testeestado") { var l = Audio.Listar(0, true, true, null); File.WriteAllText(args[1], App.EstadoTexto(l)); Audio.Liberar(l); return; }
         if (args.Length == 1 && args[0] == "--apagar-identidade") { Rede.ApagarIdentidade(); return; }
         // so para quem publica: assina o .exe de uma versao (chave que fica guardada neste PC)
@@ -569,6 +570,7 @@ class Disp
     public IAudioEndpointVolume Ep;
     public IAudioMeterInformation Medidor;
     public List<GrupoApp> Apps = new List<GrupoApp>();
+    public List<GrupoApp> Usando = new List<GrupoApp>();   // microfone: apps que estao captando agora
 }
 
 class GrupoApp
@@ -622,6 +624,8 @@ static class Audio
     public static Guid IID_MEDIDOR = new Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064");
     static readonly uint MeuPid = (uint)Process.GetCurrentProcess().Id;
     public static bool ComMedidor;   // so pega os medidores quando a animacao esta ligada
+    public static bool ComUso = true;   // microfones: le quais apps estao usando
+    public static bool DiagUso;
     public static Guid Ctx = Guid.NewGuid();
 
     static readonly Guid PK_DEV = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0");
@@ -718,6 +722,7 @@ static class Audio
                     if (d.Activate(ref IID_MEDIDOR, 23, IntPtr.Zero, out om) == 0 && om != null) x.Medidor = (IAudioMeterInformation)om;
                 }
                 if (comApps && fluxo == 0) LerApps(d, x, inativos, filtrar);
+                if (comApps && fluxo == 1 && ComUso) LerUso(d, x);
                 l.Add(x);
             }
             catch { }
@@ -726,6 +731,88 @@ static class Audio
         Soltar(col);
         l.Sort((a, b) => string.Compare(a.Nome, b.Nome, StringComparison.CurrentCultureIgnoreCase));
         return l;
+    }
+
+    // apps que estao captando o microfone agora (so os ativos; nada fica guardado)
+    static void LerUso(IMMDevice d, Disp x)
+    {
+        object o;
+        if (d.Activate(ref IID_SM2, 23, IntPtr.Zero, out o) != 0 || o == null) return;
+        var sm = (IAudioSessionManager2)o;
+        IAudioSessionEnumerator se;
+        try
+        {
+            if (sm.GetSessionEnumerator(out se) != 0 || se == null) return;
+            int n; se.GetCount(out n);
+            for (int i = 0; i < n; i++)
+            {
+                IAudioSessionControl2 s;
+                if (se.GetSession(i, out s) != 0 || s == null) continue;
+                try
+                {
+                    int st; s.GetState(out st);
+                    if (st != 1 || s.IsSystemSoundsSession() == 0) continue;
+                    uint pid; s.GetProcessId(out pid);
+                    if (pid == MeuPid || pid == 0) continue;
+                    string caminho = Processos.Caminho(pid);
+                    if (caminho == null) continue;
+                    string exe = Path.GetFileName(caminho).ToLowerInvariant();
+                    if (x.Usando.Exists(a => a.Exe == exe)) continue;
+                    string nome = Processos.Nome(caminho);
+                    if (nome == null)
+                    {
+                        string dn; s.GetDisplayName(out dn);
+                        nome = !string.IsNullOrEmpty(dn) && !dn.StartsWith("@") ? dn : Processos.NomeArquivo(caminho);
+                    }
+                    x.Usando.Add(new GrupoApp { Exe = exe, Caminho = caminho, Nome = nome, Ativo = true });
+                }
+                catch { }
+                finally { Soltar(s); }
+            }
+            Soltar(se);
+        }
+        finally { Soltar(sm); }
+    }
+
+    // assinatura barata de quem usa os microfones (para o painel saber quando mudou)
+    public static string AssinaturaUso()
+    {
+        var sb = new StringBuilder();
+        IMMDeviceCollection col;
+        try { if (En.EnumAudioEndpoints(1, 1, out col) != 0) return ""; }
+        catch { return ""; }
+        int n; col.GetCount(out n);
+        for (int i = 0; i < n; i++)
+        {
+            IMMDevice d;
+            if (col.Item(i, out d) != 0 || d == null) continue;
+            try
+            {
+                object o;
+                if (d.Activate(ref IID_SM2, 23, IntPtr.Zero, out o) != 0 || o == null) continue;
+                var sm = (IAudioSessionManager2)o;
+                IAudioSessionEnumerator se;
+                if (sm.GetSessionEnumerator(out se) == 0 && se != null)
+                {
+                    int m; se.GetCount(out m);
+                    for (int k = 0; k < m; k++)
+                    {
+                        IAudioSessionControl2 s;
+                        if (se.GetSession(k, out s) != 0 || s == null) continue;
+                        int st; s.GetState(out st); uint pid; s.GetProcessId(out pid);
+                        if (DiagUso) sb.Append("[" + i + " st" + st + " pid" + pid + "]");
+                        if (st == 1 && pid != MeuPid) sb.Append(i).Append(':').Append(pid).Append(';');
+                        Soltar(s);
+                    }
+                    Soltar(se);
+                }
+                Soltar(sm);
+            }
+            catch { }
+            finally { Soltar(d); }
+        }
+        Soltar(col);
+        return sb.ToString();
     }
 
     static void LerApps(IMMDevice d, Disp x, bool inativos, bool filtrar)
@@ -2140,6 +2227,7 @@ class Painel : Form
     readonly List<Zona> zonas = new List<Zona>();
     Zona sobre, apertada, arrastando;
     readonly Timer tRecarregar = new Timer { Interval = 1500 };
+    string usoAssinado = "";   // quem estava usando os microfones na ultima leitura
     public DateTime Escondido = DateTime.MinValue;
 
     // Animacoes: o timer so roda durante uma transicao e para sozinho depois
@@ -2159,7 +2247,7 @@ class Painel : Form
 
     class Zona { public Rectangle R; public int Tipo; public Disp D; public GrupoApp G; public Perfil P; public int F; public string Id; }
     const int Z_RECOLHER = 10, Z_NOME_A = 11, Z_ESCONDIDOS = 12, Z_MOSTRAR = 13, Z_USAR = 14, Z_PC = 15, Z_TENTAR = 16, Z_LISTA_PERFIS = 17,
-              Z_PARTES = 18, Z_SLIDER_P = 19, Z_MUDO_P = 20, Z_TESTE = 21, Z_PRIORIDADE = 22;
+              Z_PARTES = 18, Z_SLIDER_P = 19, Z_MUDO_P = 20, Z_TESTE = 21, Z_PRIORIDADE = 22, Z_USO = 23, Z_NOITE = 24;
     string testando;   // saida tocando o som de teste agora   // janelas de um app: setinha, barra e mudo de cada uma
     // apps com as janelas abertas no painel (saida|exe); nao e guardado: o painel abre sempre fechado
     readonly HashSet<string> partesAbertas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2273,6 +2361,11 @@ class Painel : Form
                                            Saida = c[7].Length == 0 ? null : c[7], Sistema = c[8] == "1" };
                     d.Apps.Add(a);
                 }
+                else if (c[0] == "U" && c.Length >= 4)
+                {
+                    Disp d;
+                    if (porId.TryGetValue(c[1], out d)) d.Usando.Add(new GrupoApp { Remoto = true, Exe = c[2], Nome = c[3], Ativo = true });
+                }
                 else if (c[0] == "P" && c.Length >= 7)
                 {
                     Disp d;
@@ -2332,7 +2425,9 @@ class Painel : Form
             // leve: a cada 1,5 s so confere os volumes que ja estao na tela; a lista inteira so a cada 6 s
             // (apps novos e saidas ligadas/desligadas ja chegam na hora pelos avisos do Windows)
             if (Alvo != null) { if (++ticks % 2 == 0) PedirEstado(); return; }   // outro PC: a cada 3 s
-            if (++ticks % 4 == 0) Recarregar(); else AtualizarValores();
+            if (++ticks % 4 == 0) Recarregar();
+            else if (app.UsoMic && app.Mics && Audio.AssinaturaUso() != usoAssinado) Recarregar();   // um app comecou/parou de usar o microfone
+            else AtualizarValores();
         };
         tAnim.Tick += (s, e) => PassoAnimacao();
         tMidia.Tick += (s, e) => PassoMidia();
@@ -3284,7 +3379,7 @@ class Painel : Form
             if (quadroViz == null || quadroViz.Width < ClientSize.Width || quadroViz.Height < r.Bottom)
             {
                 if (quadroViz != null) quadroViz.Dispose();
-                quadroViz = new Bitmap(ClientSize.Width, Math.Max(r.Bottom, ClientSize.Height), System.Drawing.Imaging.PixelFormat.Format32bppPArgb);   // mesmo formato do desenho normal
+                quadroViz = new Bitmap(ClientSize.Width, Math.Max(r.Bottom, ClientSize.Height), System.Drawing.Imaging.PixelFormat.Format32bppRgb);   // sem alfa: o texto do GDI (ClearType) sai igual ao da tela, sem cores
             }
             using (var gb = Graphics.FromImage(quadroViz))
             {
@@ -3292,7 +3387,12 @@ class Painel : Form
                 gb.Clear(cFundo);
                 CartaoMidia(gb, ultYMidia, E(12), largura, ultTopoMidia);
             }
-            using (var g = CreateGraphics()) g.DrawImage(quadroViz, r, r, GraphicsUnit.Pixel);
+            using (var g = CreateGraphics())
+            {
+                // copia sem misturar: o texto do GDI deixa o alfa zerado no quadro, e misturando ele vira cor (verde/rosa/laranja)
+                g.CompositingMode = CompositingMode.SourceCopy;
+                g.DrawImage(quadroViz, r, r, GraphicsUnit.Pixel);
+            }
         }
         catch { }
         finally
@@ -3340,7 +3440,8 @@ class Painel : Form
         saidas = Alvo != null ? remS : Audio.Listar(0, true, app.Inativos, app.Nomes);
         escondidos[0].Clear(); escondidos[1].Clear();
         saidas.RemoveAll(d => !d.Padrao && app.Ocultos.Contains(d.Id) && Guardar(d) && Soltar(d));
-        entradas = Alvo != null ? remE : app.Mics ? Audio.Listar(1, false, false, app.Nomes) : new List<Disp>();
+        entradas = Alvo != null ? remE : app.Mics ? Audio.Listar(1, true, false, app.Nomes) : new List<Disp>();
+        if (Alvo == null) usoAssinado = app.UsoMic && app.Mics ? Audio.AssinaturaUso() : "";
         entradas.RemoveAll(d => !d.Padrao && app.Ocultos.Contains(d.Id) && Guardar(d) && Soltar(d));
         var tocando = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var d in saidas) foreach (var g in d.Apps) if (g.Ativo && !g.Sistema) tocando.Add(g.Exe);
@@ -3509,6 +3610,8 @@ class Painel : Form
     void Montar(Graphics g)
     {
         zonas.Clear();
+        // o cartao "Tocando agora" so vale onde foi desenhado agora (trocou de aba/carregando: nao redesenha no lugar velho)
+        ultYMidia = int.MinValue; rSecaoMidia = Rectangle.Empty; rcMidia = Rectangle.Empty;
         cartoes.Clear();
         chips.Clear();
         meds.Clear();
@@ -3519,8 +3622,12 @@ class Painel : Form
         var rTit = new Rectangle(pad + E(4), y, W - pad * 2 - E(76), E(32));
         var rMenu = new Rectangle(W - pad - E(32), y, E(32), E(32));
         var rPrio = new Rectangle(rMenu.X - E(36), y, E(32), E(32));
+        bool comLua = app.Noite && Alvo == null;   // modo noite e deste PC: a lua so aparece em "Este PC"
+        var rLua = new Rectangle(rPrio.X - E(36), y, E(32), E(32));
+        if (comLua) rTit = new Rectangle(rTit.X, rTit.Y, rTit.Width - E(36), rTit.Height);
         Add(rMenu, Z_MENU, null, null, null);
         Add(rPrio, Z_PRIORIDADE, null, null, null);
+        if (comLua) Add(rLua, Z_NOITE, null, null, null);
         if (g != null)
         {
             string sub = Alvo != null ? "  ·  " + Alvo.Nome : app.UsarPerfis && app.PerfilAtivo != null ? "  ·  " + app.PerfilAtivo : "";
@@ -3573,6 +3680,12 @@ class Painel : Form
             // prioridade das saidas: em destaque quando a troca automatica esta ligada
             if (Sobre(Z_PRIORIDADE, null, null, null)) Fundo(g, rPrio, cHover, E(4));
             TextRenderer.DrawText(g, "\uE8CB", fGlifo, rPrio, app.PrioridadeAuto ? cAcento : cTexto, TC);
+            if (comLua)
+            {
+                // lua: colorida enquanto o modo noite esta segurando o volume
+                if (Sobre(Z_NOITE, null, null, null)) Fundo(g, rLua, cHover, E(4));
+                TextRenderer.DrawText(g, "\uE708", fGlifo, rLua, app.NoiteAgindo() ? (escuro ? Color.FromArgb(255, 204, 102) : Color.FromArgb(196, 132, 0)) : Color.FromArgb(150, cFraco), TC);   // amarelo de lua: nao depende da cor de destaque
+            }
         }
         y += E(40);
         // divisao sutil entre o titulo e o conteudo
@@ -3926,7 +4039,9 @@ class Painel : Form
         int hFechado = hLinha1 + E(4);
         int hPartes = 0;
         foreach (var a in d.Apps) hPartes += (int)Math.Round((a.Partes.Count * hParte + E(4)) * FracPartes(d, a));
-        int hAberto = hLinha1 + hLinha2 + E(4) + d.Apps.Count * hApp + hPartes + (d.Apps.Count > 0 ? E(6) : 0);
+        bool comUso = d.Fluxo == 1 && app.UsoMic && d.Usando.Count > 0;
+        int hUso = comUso ? E(34) : 0;
+        int hAberto = hLinha1 + hLinha2 + E(4) + d.Apps.Count * hApp + hPartes + (d.Apps.Count > 0 ? E(6) : 0) + hUso;
         int h = hFechado + (int)Math.Round((hAberto - hFechado) * f);
         var rc = new Rectangle(x0, y, cw, h);
         cartoes.Add(new KeyValuePair<Rectangle, Disp>(rc, d));
@@ -3995,6 +4110,7 @@ class Painel : Form
             if (!aberto && !hovCab && !alvo)
             {
                 string resumo = (d.Apps.Count > 0 ? d.Apps.Count + (d.Apps.Count == 1 ? " app · " : " apps · ") : "") +
+                                (comUso ? "em uso · " : "") +
                                 (d.Mudo ? "mudo" : (int)Math.Round(d.Vol * 100) + "%");
                 int tw = TextRenderer.MeasureText(resumo, fPequena, Size.Empty, TextFormatFlags.NoPadding).Width;
                 TextRenderer.DrawText(g, resumo, fPequena, new Rectangle(direita - tw, r1.Y, tw + E(2), r1.Height), cFraco, TF);
@@ -4046,6 +4162,8 @@ class Painel : Form
                         new Rectangle(rSl.Right, y2, E(40), hLinha2), d.Mudo ? cFraco : alto ? cAlto : cTexto, TC);
                 }
 
+                if (comUso) UsoLinha(g, d, y2 + hLinha2 + E(2), x0, cw, xTexto, f >= 1f);
+
                 // Apps desta saida
                 int ya = y2 + hLinha2 + E(4);
                 if (d.Apps.Count > 0 && g != null)
@@ -4079,6 +4197,54 @@ class Painel : Form
             using (var p = Desenho.Arred(new RectangleF(rc.X, rc.Y, rc.Width, rc.Height), E(8)))
             using (var b = new SolidBrush(Color.FromArgb(150, cFundo))) g.FillPath(b, p);
         return y + h + E(8);
+    }
+
+    // microfone: "Usando agora" + icone de cada app que esta captando (passe o mouse para ver o nome)
+    void UsoLinha(Graphics g, Disp d, int y, int x0, int cw, int xTexto, bool clicavel)
+    {
+        int h = E(32), ti = E(18);
+        if (g != null) using (var pn = new Pen(cBorda)) g.DrawLine(pn, x0 + E(12), y, x0 + cw - E(12), y);
+        int xl = xTexto - E(10);
+        string rot = "Usando agora";
+        int wr = TextRenderer.MeasureText(rot, fPequena, Size.Empty, TextFormatFlags.NoPadding).Width;
+        int fim = x0 + cw - E(14);
+        int x = xl + wr + E(10);
+        int passo = ti + E(8);
+        // cabe quantos? (sobra lugar para o nome de quem esta com o mouse em cima, e para o "+N")
+        int nomeMin = d.Usando.Count == 1 ? 0 : E(80);
+        int cabem = Math.Max(1, (fim - x - nomeMin) / passo);
+        bool sobra = d.Usando.Count > cabem;
+        if (sobra) cabem = Math.Max(1, (fim - x - nomeMin - E(28)) / passo);
+        int mostrar = Math.Min(d.Usando.Count, cabem);
+        GrupoApp emCima = null;
+        for (int i = 0; i < mostrar; i++)
+        {
+            var a = d.Usando[i];
+            var r = new Rectangle(x - E(4), y + (h - ti) / 2 - E(4), ti + E(8), ti + E(8));
+            if (clicavel) Add(r, Z_USO, d, a, null);
+            if (Sobre(Z_USO, d, a, null)) emCima = a;
+            if (g != null)
+            {
+                if (emCima == a) Fundo(g, r, cHover, E(5));
+                var rImg = new Rectangle(x, y + (h - ti) / 2, ti, ti);
+                Bitmap bmp = a.Caminho != null ? Processos.Icone(a.Caminho, ti) : a.Remoto ? IconeRemoto(a) : null;
+                if (bmp != null) { g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.DrawImage(bmp, rImg); }
+                else TextRenderer.DrawText(g, "\uE71D", fGlifoP, rImg, cTexto, TC);
+            }
+            x += passo;
+        }
+        if (g == null) return;
+        TextRenderer.DrawText(g, rot, fPequena, new Rectangle(xl, y, wr + E(2), h), cFraco, TF);
+        if (sobra)
+        {
+            string mais = "+" + (d.Usando.Count - mostrar);
+            TextRenderer.DrawText(g, mais, fPequena, new Rectangle(x - E(2), y, E(28), h), cFraco, TF);
+            x += E(28);
+        }
+        // nome: sempre quando e um app so; com varios, o de quem esta com o mouse em cima
+        var quem = d.Usando.Count == 1 ? d.Usando[0] : emCima;
+        if (quem != null && fim - x > E(20))
+            TextRenderer.DrawText(g, quem.Nome, fPequena, new Rectangle(x, y, fim - x, h), cTexto, TF);
     }
 
     void AppLinha(Graphics g, Disp d, GrupoApp a, int y, int x0, int cw, int colIcone, int xTexto, int h)
@@ -4797,6 +4963,9 @@ class Painel : Form
                 }
                 break;
             case Z_MIDIA_PROX: ComandoMidia("proxima"); break;
+            case Z_NOITE:
+                app.AlternarNoiteAgora();
+                break;
             case Z_PRIORIDADE:
                 app.AbrirConfiguracoes(5);
                 app.AfastarConfig(Bounds);
@@ -6281,6 +6450,11 @@ class App : ApplicationContext
     public bool MidiaNoTopo;
     public int Mostrador = 2;          // mostrador do som no "Tocando agora": 0 nenhum, 1 barras de fundo, 2 barrinha lateral
     public bool PrecisaMedidor { get { return MostrarSom || (TocandoAgora && Mostrador != 0); } }           // "Tocando agora" em cima (depois dos PCs e do perfil) ou embaixo      // "Tocando agora" preso no rodape quando a lista rola     // com varias tocando, passa para a proxima sozinho a cada N s (0 = nao troca)
+    public bool UsoMic = true;         // mostra no cartao do microfone os apps que estao usando
+    // Modo noite: segura o volume em certas horas
+    public bool Noite;                 // desligado por padrao
+    public int NoiteIni = 22, NoiteFim = 7, NoiteMax = 30;   // horas (ini == fim: o dia todo) e volume maximo em %
+    public bool NoiteEstouro = true;   // baixa o app que estourar (explosao, grito...)
     public bool MostrarBateria = true; // bateria do outro PC no titulo     // o painel abre no ultimo PC visto (inclusive depois de reiniciar)
     public string UltimoPc;
     // prioridade: lista ordenada de aparelhos (saidas e microfones), incluindo os desconectados
@@ -6361,6 +6535,9 @@ class App : ApplicationContext
         LerConfig();
         if (string.IsNullOrEmpty(MeuId)) { MeuId = Guid.NewGuid().ToString("N"); if (!primeiraVez) SalvarConfig(); }
         Audio.ComMedidor = PrecisaMedidor;
+        Audio.ComUso = UsoMic;
+        tNoite.Tick += (s, e) => PassoNoite();
+        if (Noite) tNoite.Start();
         invocador.CreateControl();
         var h = invocador.Handle;
 
@@ -7101,6 +7278,121 @@ class App : ApplicationContext
 
     public void PainelMudou() { if (painel.Visible) painel.Recarregar(); }
 
+    // ================= Modo noite =================
+    // Leve: sem o modo ligado nao roda nada. Ligado, confere a cada 0,5 s so o volume da saida padrao
+    // (e, com "baixar o app que estourar", os medidores dos apps dessa saida).
+    readonly Timer tNoite = new Timer { Interval = 500 };
+    bool? noiteForcado; DateTime noiteAte;   // clique na lua: liga/desliga ate a proxima virada de horario
+    bool noiteAgindoAntes;
+    int noiteTicks;
+    class SessaoNoite { public string Exe; public ISimpleAudioVolume Vol; public IAudioMeterInformation Med; public object Rcw; public float Media; public DateTime Pausa; }
+    readonly List<SessaoNoite> sessoesNoite = new List<SessaoNoite>();
+
+    public bool NoiteNoHorario(DateTime t)
+    {
+        if (NoiteIni == NoiteFim) return true;   // o dia todo
+        int h = t.Hour;
+        return NoiteIni < NoiteFim ? (h >= NoiteIni && h < NoiteFim) : (h >= NoiteIni || h < NoiteFim);
+    }
+    public bool NoiteAgindo()
+    {
+        if (!Noite) return false;
+        var agora = DateTime.Now;
+        if (noiteForcado.HasValue && agora < noiteAte) return noiteForcado.Value;
+        noiteForcado = null;
+        return NoiteNoHorario(agora);
+    }
+    // proxima vez em que o horario vira (comeca ou termina)
+    DateTime ProximaVirada(DateTime t)
+    {
+        if (NoiteIni == NoiteFim) return DateTime.MaxValue;
+        bool agora = NoiteNoHorario(t);
+        var x = new DateTime(t.Year, t.Month, t.Day, t.Hour, 0, 0).AddHours(1);
+        for (int i = 0; i < 48; i++, x = x.AddHours(1)) if (NoiteNoHorario(x) != agora) return x;
+        return DateTime.MaxValue;
+    }
+    // lua do painel: liga ou desliga agora (volta sozinho ao normal na proxima virada do horario)
+    public void AlternarNoiteAgora()
+    {
+        bool novo = !NoiteAgindo();
+        noiteForcado = novo; noiteAte = ProximaVirada(DateTime.Now);
+        PassoNoite();
+        painel.Invalidate();
+    }
+    public void NoiteMudou()
+    {
+        noiteForcado = null;
+        if (Noite) { tNoite.Start(); PassoNoite(); }
+        else { tNoite.Stop(); SoltarSessoesNoite(); }
+        if (painel.Visible) painel.Recarregar();
+    }
+    void SoltarSessoesNoite()
+    {
+        foreach (var x in sessoesNoite) Audio.Soltar(x.Rcw);
+        sessoesNoite.Clear();
+    }
+    void PassoNoite()
+    {
+        if (!Noite) { tNoite.Stop(); return; }
+        bool agindo = NoiteAgindo();
+        if (agindo != noiteAgindoAntes) { noiteAgindoAntes = agindo; if (painel.Visible) painel.Invalidate(); if (!agindo) SoltarSessoesNoite(); }
+        if (!agindo) { tNoite.Interval = 20000; return; }   // fora do horario: so confere de vez em quando
+        tNoite.Interval = 500;
+        float max = NoiteMax / 100f;
+        IMMDevice d = null; object o = null;
+        try
+        {
+            if (Audio.En.GetDefaultAudioEndpoint(0, 0, out d) != 0 || d == null) return;
+            if (d.Activate(ref Audio.IID_EP, 23, IntPtr.Zero, out o) == 0 && o != null)
+            {
+                var ep = (IAudioEndpointVolume)o; float v;
+                if (ep.GetMasterVolumeLevelScalar(out v) == 0 && v > max + 0.005f) ep.SetMasterVolumeLevelScalar(max, ref Audio.Ctx);
+            }
+            if (!NoiteEstouro) { SoltarSessoesNoite(); return; }
+            // apps desta saida: relidos a cada 5 s
+            if (noiteTicks++ % 10 == 0)
+            {
+                SoltarSessoesNoite();
+                object om;
+                if (d.Activate(ref Audio.IID_SM2, 23, IntPtr.Zero, out om) == 0 && om != null)
+                {
+                    var sm = (IAudioSessionManager2)om; IAudioSessionEnumerator se;
+                    if (sm.GetSessionEnumerator(out se) == 0 && se != null)
+                    {
+                        int n; se.GetCount(out n);
+                        for (int i = 0; i < n; i++)
+                        {
+                            IAudioSessionControl2 s;
+                            if (se.GetSession(i, out s) != 0 || s == null) continue;
+                            int st; s.GetState(out st);
+                            if (st != 1 || s.IsSystemSoundsSession() == 0) { Audio.Soltar(s); continue; }
+                            uint pid; s.GetProcessId(out pid);
+                            sessoesNoite.Add(new SessaoNoite { Exe = pid.ToString(), Vol = s as ISimpleAudioVolume, Med = s as IAudioMeterInformation, Rcw = s, Media = -1 });
+                        }
+                        Audio.Soltar(se);
+                    }
+                    Audio.Soltar(sm);
+                }
+            }
+            var agora = DateTime.Now;
+            foreach (var x in sessoesNoite)
+            {
+                float pk, vol;
+                if (x.Med == null || x.Vol == null || x.Med.GetPeakValue(out pk) != 0) continue;
+                if (x.Media < 0) { x.Media = pk; continue; }
+                // estourou: bem mais alto que o normal deste app (explosao, grito...) -> baixa um pouco o app
+                if (agora > x.Pausa && pk > 0.6f && pk > x.Media * 3f && x.Media > 0.01f && x.Vol.GetMasterVolume(out vol) == 0 && vol > 0.16f)
+                {
+                    x.Vol.SetMasterVolume(Math.Max(0.15f, vol * 0.7f), ref Audio.Ctx);
+                    x.Pausa = agora.AddSeconds(3);
+                }
+                x.Media = x.Media * 0.92f + pk * 0.08f;
+            }
+        }
+        catch { }
+        finally { Audio.Soltar(o); Audio.Soltar(d); }
+    }
+
     // =================== outros PCs ===================
     public bool Receptor
     {
@@ -7453,7 +7745,9 @@ class App : ApplicationContext
             try
             {
                 remCache = Audio.Listar(0, true, Inativos, Nomes);
-                remCache.AddRange(Audio.Listar(1, false, false, Nomes));   // microfones (barrinhas quando um app usa o mic)
+                bool comUso = Audio.ComUso; Audio.ComUso = true;   // o outro PC decide se mostra
+                try { remCache.AddRange(Audio.Listar(1, true, false, Nomes)); }   // microfones (barrinhas e quem esta usando)
+                finally { Audio.ComUso = comUso; }
             }
             finally { Audio.ComMedidor = comMed; }
             remCacheT = DateTime.Now;
@@ -7480,6 +7774,8 @@ class App : ApplicationContext
                     foreach (var pt in a.Partes)
                         sb.Append("P\t").Append(T(d.Id)).Append('\t').Append(T(a.Exe)).Append('\t').Append(pt.Pid).Append('\t').Append(T(pt.Nome))
                           .Append('\t').Append(N(pt.Vol)).Append('\t').Append(pt.Mudo ? 1 : 0).Append('\n');
+            foreach (var a in d.Usando)   // microfone: quem esta usando (versoes antigas ignoram a linha "U")
+                sb.Append("U\t").Append(T(d.Id)).Append('\t').Append(T(a.Exe)).Append('\t').Append(T(a.Nome)).Append('\n');
         }
         return sb.ToString();
     }
@@ -8046,6 +8342,16 @@ class App : ApplicationContext
                     case "tocando_mostrador": { int n; if (int.TryParse(v, out n) && n >= 0 && n <= 2) Mostrador = n; } break;
                     case "tocando_troca": { int n; if (int.TryParse(v, out n) && n >= 0 && n <= 120) TrocaMidiaSeg = n; } break;
                     case "bateria_pc": MostrarBateria = v == "1"; break;
+                    case "uso_mic": UsoMic = v == "1"; break;
+                    case "noite": Noite = v == "1"; break;
+                    case "noite_estouro": NoiteEstouro = v == "1"; break;
+                    case "noite_max": { int n; if (int.TryParse(v, out n) && n >= 5 && n <= 100) NoiteMax = n; } break;
+                    case "noite_horas":
+                        {
+                            var hs = v.Split('-'); int a, b;
+                            if (hs.Length == 2 && int.TryParse(hs[0], out a) && int.TryParse(hs[1], out b) && a >= 0 && a < 24 && b >= 0 && b < 24) { NoiteIni = a; NoiteFim = b; }
+                        }
+                        break;
                     case "ultimo_pc": UltimoPc = v; break;
                     case "atualizar": AtualizarSozinho = v == "1"; break;
                     case "prioridade_auto": PrioridadeAuto = v == "1"; break;
@@ -8168,7 +8474,8 @@ class App : ApplicationContext
                 "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "nome_app=" + (MostrarNomeApp ? 1 : 0), "pausar_fone=" + string.Join(";", PausarAoTirarFone), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
-            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("tocando_topo=" + (MidiaNoTopo ? 1 : 0)); l.Add("tocando_mostrador=" + Mostrador); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
+            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("tocando_topo=" + (MidiaNoTopo ? 1 : 0)); l.Add("tocando_mostrador=" + Mostrador); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("uso_mic=" + (UsoMic ? 1 : 0));
+            l.Add("noite=" + (Noite ? 1 : 0)); l.Add("noite_estouro=" + (NoiteEstouro ? 1 : 0)); l.Add("noite_max=" + NoiteMax); l.Add("noite_horas=" + NoiteIni + "-" + NoiteFim); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
             l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0)); l.Add("atualizar=" + (AtualizarSozinho ? 1 : 0));
             l.Add("prioridade_auto=" + (PrioridadeAuto ? 1 : 0));
             l.Add("prio0=" + string.Join(";", Prioridade[0])); l.Add("prio1=" + string.Join(";", Prioridade[1]));
@@ -8404,8 +8711,48 @@ class Configuracoes : Form
         public Func<string> Valor;
         public Action<Rectangle> Clicar;
         public string Id; public int Fluxo, Ordem; public bool Ativo, Padrao;   // L_PRIO
+        public bool Sub;   // depende da opcao de cima: fica grudada nela e recuada
     }
-    class Zona { public Rectangle R; public int Pagina = -1; public Linha L; public bool Teste, Menu; }
+    bool sub;   // as proximas linhas dependem da de cima
+    class Zona { public Rectangle R; public int Pagina = -1; public Linha L; public bool Teste, Menu, Abrir; }
+    readonly HashSet<string> abertasCfg = new HashSet<string>();   // opcoes com as dependentes abertas (seta)
+    readonly Dictionary<string, float> progAbre = new Dictionary<string, float>();   // 0 fechada .. 1 aberta (animacao)
+    readonly Timer tAbre = new Timer { Interval = 15 };
+    float ProgAbre(string t) { float v; return progAbre.TryGetValue(t, out v) ? v : 0f; }
+    static float Suave(float t) { t = Math.Max(0f, Math.Min(1f, t)); return 1f - (1f - t) * (1f - t) * (1f - t); }
+    void AlternarAbre(string t)
+    {
+        if (!abertasCfg.Remove(t)) abertasCfg.Add(t);
+        if (!app.Animacoes) { progAbre[t] = abertasCfg.Contains(t) ? 1f : 0f; Montar(); Invalidate(); return; }
+        if (!tAbre.Enabled)
+        {
+            tAbre.Tick -= PassoAbre; tAbre.Tick += PassoAbre;
+            tAbre.Start();
+        }
+    }
+    void PassoAbre(object s, EventArgs e)
+    {
+        bool falta = false;
+        var todas = new HashSet<string>(progAbre.Keys); todas.UnionWith(abertasCfg);
+        foreach (var t in todas)
+        {
+            float alvo = abertasCfg.Contains(t) ? 1f : 0f, v = ProgAbre(t);
+            if (v == alvo) continue;
+            v += alvo > v ? 0.09f : -0.09f;   // ~170 ms
+            if ((alvo == 1f && v >= 1f) || (alvo == 0f && v <= 0f)) v = alvo; else falta = true;
+            progAbre[t] = v;
+        }
+        if (!falta) tAbre.Stop();
+        Invalidate();
+    }
+    // altura de uma opcao dependente (para saber quanto a animacao abre)
+    int AlturaSub(Graphics g, Linha l, int w)
+    {
+        if (l.Desc == null) return E(54);
+        int descW = Math.Max(E(80), w - E(54) - E(200));
+        return E(50) + TextRenderer.MeasureText(g, l.Desc, fPequena, new Size(descW, 0),
+            TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Height;
+    }
     const int L_CAB = 0, L_CHAVE = 1, L_BOTAO = 2, L_NOTA = 3, L_GRUPO = 4, L_PRIO = 5;
     // arrastar na lista de prioridade
     Linha arrastoL; int arrastoY0, arrastoPara = -1; bool arrastandoL, soltou;
@@ -8511,11 +8858,11 @@ class Configuracoes : Form
     void Nota(string t) { linhas.Add(new Linha { Tipo = L_NOTA, Titulo = t }); }
     void Chave(string t, string d, Func<bool> ler, Action<bool> gravar)
     {
-        linhas.Add(new Linha { Tipo = L_CHAVE, Titulo = t, Desc = d, Ler = ler, Gravar = gravar });
+        linhas.Add(new Linha { Tipo = L_CHAVE, Titulo = t, Desc = d, Ler = ler, Gravar = gravar, Sub = sub });
     }
     void Botao(string t, string d, Func<string> valor, Action<Rectangle> clicar, char glifo = '\0')
     {
-        linhas.Add(new Linha { Tipo = L_BOTAO, Titulo = t, Desc = d, Valor = valor, Clicar = clicar, Glifo = glifo });
+        linhas.Add(new Linha { Tipo = L_BOTAO, Titulo = t, Desc = d, Valor = valor, Clicar = clicar, Glifo = glifo, Sub = sub });
     }
 
     ContextMenuStrip NovoMenu()
@@ -8535,12 +8882,17 @@ class Configuracoes : Form
 
     void Montar()
     {
-        linhas.Clear();
+        linhas.Clear(); sub = false;
         const char EXT = '';
         if (pagina == 0)
         {
             Cab("Painel");
             Chave("Mostrar microfones", "Mostra os microfones no painel, abaixo das saídas", () => app.Mics, v => app.Mics = v);
+            sub = true;
+            if (app.Mics)
+                Chave("Mostrar quem está usando o microfone", "Linha \"Usando agora\" no cartão do microfone, com o ícone de cada app que está captando a sua voz. Passe o mouse no ícone para ver o nome. Também do outro PC",
+                    () => app.UsoMic, v => { app.UsoMic = v; Audio.ComUso = v; app.SalvarConfig(); app.PainelMudou(); });
+            sub = false;
             Chave("Mostrar apps em silêncio", "Mostra também os apps abertos que não estão tocando som agora", () => app.Inativos, v => app.Inativos = v);
             Chave("Mostrar o nome do adaptador", "Ex.: \"AMD High Definition Audio Device\" ao lado do nome de cada saída", () => app.MostrarAdaptador, v => app.MostrarAdaptador = v);
             Chave("Mostrar o logo no topo do painel", "O ícone roxo do Sintonia ao lado do nome, no cabeçalho do painel", () => app.MostrarLogo, v => app.MostrarLogo = v);
@@ -8549,6 +8901,7 @@ class Configuracoes : Form
                 () => app.MostrarSom, v => app.DefinirSom(v));
             Chave("Tocando agora", "Cartão no fim do painel com a música ou vídeo que está tocando (Spotify, YouTube…) e os botões anterior, tocar/pausar e próxima. Também do outro PC",
                 () => app.TocandoAgora, v => { app.TocandoAgora = v; app.SalvarConfig(); app.MedidorMudou(); });
+            sub = true;
             if (app.TocandoAgora)
                 Botao("Mostrador do som", "Anima o cartão \"Tocando agora\" conforme o som do app que está tocando. Só com o painel aberto",
                     () => app.Mostrador == 1 ? "Barras de fundo" : app.Mostrador == 2 ? "Barrinha lateral" : "Nenhum", r =>
@@ -8577,6 +8930,7 @@ class Configuracoes : Form
                         }
                         MostrarMenu(m, r);
                     });
+            sub = false;
             Botao("Altura máxima do painel", "Até onde o painel cresce. Passando disso, a lista rola com a roda do mouse",
                 () => app.AlturaMax == 100 ? "Tela toda" : app.AlturaMax + "% da tela", r =>
             {
@@ -8609,6 +8963,44 @@ class Configuracoes : Form
             Chave("Fixar o ícone na barra de tarefas", "Deixa o ícone sempre visível ao lado do relógio, em vez de escondido no ^", () => app.FixarBandeja, v => app.AplicarFixar(v));
             Botao("Ícones da bandeja no Windows", "Abre a tela do Windows onde dá para fixar o ícone manualmente", () => "",
                 r => Abrir("ms-settings:taskbar"), EXT);
+
+            Cab("Noite");
+            Chave("Modo noite", "Segura o volume da saída nas horas escolhidas. Uma lua no topo do painel mostra quando está agindo, e um clique nela liga ou desliga na hora",
+                () => app.Noite, v => { app.Noite = v; app.SalvarConfig(); app.NoiteMudou(); });
+            sub = true;
+            if (app.Noite)
+            {
+                Botao("Horário", "Fora deste horário o volume fica livre",
+                    () => app.NoiteIni == app.NoiteFim ? "O dia todo" : app.NoiteIni + "h até " + app.NoiteFim + "h", r =>
+                    {
+                        var m = NovoMenu();
+                        foreach (var hs in new[] { new[] { 21, 7 }, new[] { 22, 7 }, new[] { 23, 7 }, new[] { 0, 8 }, new[] { 22, 9 }, new[] { 0, 0 } })
+                        {
+                            int a = hs[0], b = hs[1];
+                            string t = a == b ? "O dia todo" : a + "h até " + b + "h" + (a == 22 && b == 7 ? " (padrão)" : "");
+                            var it = new ToolStripMenuItem(t) { Checked = app.NoiteIni == a && app.NoiteFim == b };
+                            it.Click += (s2, e2) => { app.NoiteIni = a; app.NoiteFim = b; app.SalvarConfig(); app.NoiteMudou(); Montar(); Invalidate(); };
+                            m.Items.Add(it);
+                        }
+                        MostrarMenu(m, r);
+                    });
+                Botao("Volume máximo", "A saída padrão não passa disto enquanto o modo noite age",
+                    () => app.NoiteMax + "%", r =>
+                    {
+                        var m = NovoMenu();
+                        foreach (var n0 in new[] { 10, 20, 30, 40, 50, 60 })
+                        {
+                            int n = n0;
+                            var it = new ToolStripMenuItem(n + "%" + (n == 30 ? " (padrão)" : "")) { Checked = app.NoiteMax == n };
+                            it.Click += (s2, e2) => { app.NoiteMax = n; app.SalvarConfig(); app.NoiteMudou(); Montar(); Invalidate(); };
+                            m.Items.Add(it);
+                        }
+                        MostrarMenu(m, r);
+                    });
+                Chave("Baixar o app que estourar", "Quando um app fica bem mais alto que o normal (explosão, grito…), o volume dele desce um pouco",
+                    () => app.NoiteEstouro, v => { app.NoiteEstouro = v; app.SalvarConfig(); app.NoiteMudou(); });
+            }
+            sub = false;
 
             Cab("Avisos");
             Chave("Aviso na tela ao usar os atalhos", "Mostra por um instante qual saída, perfil ou mudo foi escolhido. Não aparece por cima de jogos em tela cheia",
@@ -8772,12 +9164,14 @@ class Configuracoes : Form
                  "com tudo criptografado, e só depois de parear com um código. Nada é enviado no dia a dia: só quando o painel mostra o outro PC.");
             Cab("Este PC");
             Chave("Controlar outros PCs", "Mostra no painel um botão para cada PC pareado, para mudar o som dele daqui", () => app.Controlador, v => app.DefinirControlador(v));
+            sub = true;
             if (app.Controlador)
                 Chave("Mostrar a bateria do outro PC", "No título do painel, ao lado do nome do PC (só se ele tiver bateria)",
                     () => app.MostrarBateria, v => { app.MostrarBateria = v; app.SalvarConfig(); app.PainelMudou(); });
             if (app.Controlador)
                 Chave("Abrir no último PC visto", "O painel abre direto no PC que você estava vendo. Desligado, abre sempre em \"Este PC\". Tab ou Ctrl+1, 2, 3 trocam de PC com o painel aberto",
                     () => app.LembrarPc, v => { app.LembrarPc = v; app.SalvarConfig(); });
+            sub = false;
             Chave("Pode ser controlado por outros PCs", "Fica esperando, parado, um PC pareado pedir algo. Na primeira vez o Windows pergunta se libera o Sintonia: marque só \"Redes privadas\"",
                 () => app.Receptor, v => app.Receptor = v);
             if (app.Receptor && app.ReceptorAtivo)
@@ -8986,6 +9380,31 @@ class Configuracoes : Form
         g.SmoothingMode = SmoothingMode.None;
     }
 
+    // cartao com so alguns cantos arredondados (opcoes grudadas umas nas outras)
+    void FundoCantos(Graphics g, Rectangle r, Color c, int raio, Color borda, bool cima, bool baixo)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var rf = new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1);
+        float d = raio * 2;
+        using (var p = new GraphicsPath())
+        {
+            if (cima) { p.AddArc(rf.X, rf.Y, d, d, 180, 90); p.AddArc(rf.Right - d, rf.Y, d, d, 270, 90); }
+            else { p.AddLine(rf.X, rf.Y, rf.Right, rf.Y); }
+            if (baixo) { p.AddArc(rf.Right - d, rf.Bottom - d, d, d, 0, 90); p.AddArc(rf.X, rf.Bottom - d, d, d, 90, 90); }
+            else { p.AddLine(rf.Right, rf.Bottom, rf.X, rf.Bottom); }
+            p.CloseFigure();
+            using (var b = new SolidBrush(c)) g.FillPath(b, p);
+            using (var pn = new Pen(borda)) g.DrawPath(pn, p);
+        }
+        g.SmoothingMode = SmoothingMode.None;
+        // nas emendas, a borda some (as partes viram um cartao so)
+        using (var b = new SolidBrush(c))
+        {
+            if (!cima) g.FillRectangle(b, r.X + 1, r.Y, r.Width - 2, 1);
+            if (!baixo) g.FillRectangle(b, r.X + 1, r.Bottom - 1, r.Width - 2, 1);
+        }
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
@@ -9028,8 +9447,21 @@ class Configuracoes : Form
         TextRenderer.DrawText(g, Paginas[pagina], fTitulo, new Rectangle(x0, y, w, E(44)), cTexto, TF);
         y += E(60);
         prioRects.Clear();
-        foreach (var l in linhas)
+        Region clipAnim = null;   // opcoes dependentes abrindo/fechando: recortadas
+        for (int il = 0; il < linhas.Count; il++)
         {
+            var l = linhas[il];
+            // opcoes que dependem da de cima: um cartao so, com seta para abrir/fechar
+            bool temFilhas = !l.Sub && il + 1 < linhas.Count && linhas[il + 1].Sub && (l.Tipo == L_CHAVE || l.Tipo == L_BOTAO);
+            if (l.Sub)
+            {
+                int ip = il - 1; while (ip > 0 && linhas[ip].Sub) ip--;
+                if (ProgAbre(linhas[ip].Titulo) <= 0f) continue;   // fechada: nao mostra
+            }
+            bool aberta = temFilhas && abertasCfg.Contains(l.Titulo);
+            float pAbre = temFilhas ? Suave(ProgAbre(l.Titulo)) : 0f;
+            bool grudaBaixo = (temFilhas && pAbre > 0f) || (l.Sub && il + 1 < linhas.Count && linhas[il + 1].Sub);
+            bool grudaCima = l.Sub;
             if (l.Tipo == L_GRUPO)
             {
                 y += E(10);
@@ -9103,50 +9535,83 @@ class Configuracoes : Form
                 y += hp + E(4);
                 continue;
             }
+            // abrindo/fechando: o texto do GDI so respeita o recorte com este aviso
+            var xf = clipAnim != null ? TextFormatFlags.PreserveGraphicsClipping : TextFormatFlags.Default;
             // a explicacao quebra em mais linhas quando precisa (o cartao cresce junto)
-            int txPre = l.Glifo != '\0' ? x0 + E(54) : x0 + E(20);
+            int txPre = l.Glifo != '\0' || grudaCima ? x0 + E(54) : x0 + E(20);
             int descW = Math.Max(E(80), w - (txPre - x0) - E(200));
             int descH = l.Desc == null ? 0 : TextRenderer.MeasureText(g, l.Desc, fPequena, new Size(descW, 0),
                 TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Height;
             int h = l.Desc != null ? E(50) + descH : E(54);
             var r = new Rectangle(x0, y, w, h);
+            var rAbrir = new Rectangle(r.Right - E(48), y + (h - E(32)) / 2, E(32), E(32));
+            if (temFilhas) zonas.Add(new Zona { R = rAbrir, L = l, Abrir = true });
             zonas.Add(new Zona { R = r, L = l });
             bool hov = sobre != null && sobre.L == l;
-            Fundo(g, r, hov ? cHover : cCartao, E(6), cBorda);
-            int tx = x0 + E(20);
+            if (grudaCima || grudaBaixo)
+            {
+                FundoCantos(g, r, hov ? cHover : cCartao, E(6), cBorda, !grudaCima, !grudaBaixo);
+                // separacao minimalista: fio fino, sem encostar nas bordas
+                if (grudaCima) using (var pn = new Pen(escuro ? Color.FromArgb(36, 36, 36) : Color.FromArgb(234, 234, 234))) g.DrawLine(pn, x0 + E(20), y, r.Right - E(20), y);
+            }
+            else Fundo(g, r, hov ? cHover : cCartao, E(6), cBorda);
+            if (temFilhas)
+            {
+                bool sobreSeta = sobre != null && sobre.Abrir && sobre.L == l;
+                if (sobreSeta) Fundo(g, rAbrir, ControlPaint.Light(cHover, 0.15f), E(5), null);
+                TextRenderer.DrawText(g, (aberta ? '' : '').ToString(), fGlifoP, rAbrir, sobreSeta ? cTexto : cFraco, TC | xf);
+            }
+            int tx = grudaCima ? x0 + E(54) : x0 + E(20);
             if (l.Glifo != '\0')
             {
-                TextRenderer.DrawText(g, l.Glifo.ToString(), fGlifo, new Rectangle(x0 + E(14), y, E(28), h), cTexto, TC);
+                TextRenderer.DrawText(g, l.Glifo.ToString(), fGlifo, new Rectangle(x0 + E(14), y, E(28), h), cTexto, TC | xf);
                 tx = x0 + E(54);
             }
             int dirW = E(200);
             if (l.Desc != null)
             {
-                TextRenderer.DrawText(g, l.Titulo, fNormal, new Rectangle(tx, y + E(13), w - (tx - x0) - dirW, E(22)), cTexto, TF);
+                TextRenderer.DrawText(g, l.Titulo, fNormal, new Rectangle(tx, y + E(13), w - (tx - x0) - dirW, E(22)), cTexto, TF | xf);
                 TextRenderer.DrawText(g, l.Desc, fPequena, new Rectangle(tx, y + E(36), descW, descH + E(2)), cFraco,
-                    TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.Top);
+                    TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.Top | xf);
             }
-            else TextRenderer.DrawText(g, l.Titulo, fNormal, new Rectangle(tx, y, w - (tx - x0) - dirW, h), cTexto, TF);
+            else TextRenderer.DrawText(g, l.Titulo, fNormal, new Rectangle(tx, y, w - (tx - x0) - dirW, h), cTexto, TF | xf);
 
             if (l.Tipo == L_CHAVE)
             {
                 bool on = l.Ler();
-                var rs = new Rectangle(r.Right - E(60), y + (h - E(20)) / 2, E(40), E(20));
+                var rs = new Rectangle(r.Right - E(60) - (temFilhas ? E(40) : 0), y + (h - E(20)) / 2, E(40), E(20));
                 Interruptor(g, rs, on, hov);
                 TextRenderer.DrawText(g, on ? "Ligado" : "Desligado", fNormal, new Rectangle(rs.Left - E(110), y, E(98), h), cTexto,
-                    TF & ~TextFormatFlags.Left | TextFormatFlags.Right);
+                    TF & ~TextFormatFlags.Left | TextFormatFlags.Right | xf);
             }
             else
             {
                 char seta = l.Glifo == '' ? '' : '';
-                if (l.Glifo != '') TextRenderer.DrawText(g, seta.ToString(), fGlifoP, new Rectangle(r.Right - E(40), y, E(24), h), cFraco, TC);
+                if (l.Glifo != '') TextRenderer.DrawText(g, seta.ToString(), fGlifoP, new Rectangle(r.Right - E(40), y, E(24), h), cFraco, TC | xf);
                 string v = l.Valor();
                 if (v.Length > 0)
                     TextRenderer.DrawText(g, v, fNormal, new Rectangle(r.Right - E(44) - dirW, y, dirW, h), cFraco,
-                        TF & ~TextFormatFlags.Left | TextFormatFlags.Right);
+                        TF & ~TextFormatFlags.Left | TextFormatFlags.Right | xf);
             }
-            y += h + E(4);
+            y += h + (grudaBaixo ? 0 : E(4));   // grudadas: viram um cartao so
+            if (temFilhas && pAbre > 0f && pAbre < 1f)
+            {
+                // abrindo/fechando: as dependentes deslizam de tras da opcao, recortadas na altura de agora
+                int tot = 0;
+                for (int k = il + 1; k < linhas.Count && linhas[k].Sub; k++) tot += AlturaSub(g, linhas[k], w);
+                int hA = (int)Math.Round(tot * pAbre);
+                clipAnim = g.Clip;
+                g.SetClip(new Rectangle(x0 - E(2), y, w + E(4), hA), CombineMode.Intersect);
+                y -= tot - hA;
+            }
+            if (clipAnim != null && l.Sub && !(il + 1 < linhas.Count && linhas[il + 1].Sub))
+            {
+                g.Clip = clipAnim; clipAnim = null;
+                // fundo arredondado do cartao acompanha a animacao
+                FundoCantos(g, new Rectangle(x0, y - E(4) - E(10), w, E(10)), cCartao, E(6), cBorda, false, true);
+            }
         }
+        if (clipAnim != null) { g.Clip = clipAnim; clipAnim = null; }
         if (arrastandoL && arrastoPara >= 0)
         {
             // linha mostrando onde o aparelho vai ficar
@@ -9233,7 +9698,7 @@ class Configuracoes : Form
             }
         }
         var z = ZonaEm(e.Location);
-        bool mudou = (z == null) != (sobre == null) || (z != null && (z.L != sobre.L || z.Pagina != sobre.Pagina || z.Teste != sobre.Teste || z.Menu != sobre.Menu));
+        bool mudou = (z == null) != (sobre == null) || (z != null && (z.L != sobre.L || z.Pagina != sobre.Pagina || z.Teste != sobre.Teste || z.Menu != sobre.Menu || z.Abrir != sobre.Abrir));
         sobre = z;
         if (mudou)
         {
@@ -9283,6 +9748,7 @@ class Configuracoes : Form
         }
         if (z.Pagina >= 0) { pagina = z.Pagina; rolagem = 0; Montar(); Invalidate(); return; }
         var l = z.L;
+        if (z.Abrir) { AlternarAbre(l.Titulo); return; }
         if (l.Tipo == L_CHAVE)
         {
             l.Gravar(!l.Ler());
