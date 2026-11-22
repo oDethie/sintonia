@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.8.0")]
-[assembly: AssemblyFileVersion("1.9.8.0")]
+[assembly: AssemblyVersion("1.9.9.0")]
+[assembly: AssemblyFileVersion("1.9.9.0")]
 
 static class Program
 {
@@ -2601,6 +2601,9 @@ class Painel : Form
     bool arrastoMidia; int xMidia, dxMidia; float midiaDesl; int larguraMidia;
     DateTime ultimaTrocaMidia = DateTime.Now;
     int yRodape = int.MaxValue;
+    // roda do mouse nas barras: so depois de parar um instante em cima (rolando a lista, nao mexe no volume)
+    DateTime ultimaRolagem = DateTime.MinValue, barraDesde = DateTime.MinValue;
+    Zona barraSobre;
     Rectangle rSecaoMidia;        // titulo + cartao do "Tocando agora" (mouse aqui = nao troca sozinho)   // topo do "Tocando agora" fixo (o que esta atras dele nao se desenha por cima)   // conta o tempo da troca automatica (reinicia em toda troca)
     readonly Timer tMidia = new Timer { Interval = 1500 };
     const int Z_MIDIA_ANT = 30, Z_MIDIA_TOCAR = 31, Z_MIDIA_PROX = 32, Z_MIDIA_CARD = 33, Z_MIDIA_PONTO = 34, Z_MIDIA_ESPIA = 35, Z_MIDIA_RECOLHER = 36;
@@ -4117,6 +4120,9 @@ class Painel : Form
     void AtualizarSobre()
     {
         var z = ZonaEm(PointToClient(Cursor.Position));
+        bool ehBarra = z != null && (z.Tipo == Z_SLIDER_D || z.Tipo == Z_SLIDER_A || z.Tipo == Z_SLIDER_P);
+        if (!ehBarra) barraSobre = null;
+        else if (barraSobre == null || !Igual(z, barraSobre)) { barraSobre = z; barraDesde = DateTime.Now; }
         bool mudou = (z == null) != (sobre == null) || (z != null && !Igual(z, sobre));
         sobre = z;
         if (mudou)
@@ -4345,7 +4351,10 @@ class Painel : Form
         base.OnMouseWheel(e);
         var z = ZonaEm(e.Location);
         // A roda so rola a lista; mudar volume pela roda no painel e opcional (desligado por padrao)
-        if (app.RodaPainel && z != null && (z.Tipo == Z_SLIDER_D || z.Tipo == Z_SLIDER_A || z.Tipo == Z_SLIDER_P))
+        var agora = DateTime.Now;
+        bool parado = barraSobre != null && z != null && Igual(z, barraSobre) && (agora - barraDesde).TotalMilliseconds >= 250;
+        bool rolando = (agora - ultimaRolagem).TotalMilliseconds < 400;
+        if (app.RodaPainel && z != null && (z.Tipo == Z_SLIDER_D || z.Tipo == Z_SLIDER_A || z.Tipo == Z_SLIDER_P) && parado && !rolando)
         {
             float passo = app.Passo / 100f * (e.Delta / 120f);
             if (z.Tipo == Z_SLIDER_P) { if (z.F >= 0 && z.F < z.G.Partes.Count) AplicarParte(z.G, z.F, z.G.Partes[z.F].Vol + passo); }
@@ -4356,6 +4365,7 @@ class Painel : Form
         }
         int max = Math.Max(0, alturaConteudo - ClientSize.Height);
         if (max == 0) return;
+        ultimaRolagem = agora;
         rolagem = Math.Max(0, Math.Min(max, rolagem - e.Delta * E(40) / 120));
         Montar(null);
         AtualizarSobre();
