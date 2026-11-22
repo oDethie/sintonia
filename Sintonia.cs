@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.7.0.0")]
-[assembly: AssemblyFileVersion("1.7.0.0")]
+[assembly: AssemblyVersion("1.7.1.0")]
+[assembly: AssemblyFileVersion("1.7.1.0")]
 
 static class Program
 {
@@ -7452,7 +7452,10 @@ class Configuracoes : Form
         {
             Nota("Quando um aparelho conecta ou desconecta (ex.: o fone Bluetooth), o Sintonia passa a usar o primeiro da lista que estiver conectado. " +
                  "Se você trocar à mão, ele respeita até um aparelho entrar ou sair. Arraste para mudar a ordem; ▶ toca um som de teste naquela saída.");
-            Chave("Trocar sozinho pela prioridade", "Vale para a saída e o microfone padrão", () => app.PrioridadeAuto, v => app.DefinirPrioridadeAuto(v));
+            Chave("Trocar sozinho pela prioridade", app.PrioridadeAuto
+                    ? "Ligado: o 1º conectado vira a saída (e o microfone) padrão. Arrastar um aparelho para o 1º lugar já troca na hora"
+                    : "Desligado: a ordem fica guardada, mas nada troca sozinho",
+                () => app.PrioridadeAuto, v => app.DefinirPrioridadeAuto(v));
             foreach (var fluxo in new[] { 0, 1 })
             {
                 Cab(fluxo == 0 ? "Saídas" : "Microfones");
@@ -7801,12 +7804,21 @@ class Configuracoes : Form
                 bool movendo = arrastandoL && arrastoL == l;
                 Fundo(g, rp, movendo ? cHover : hovp ? cHover : cCartao, E(6), cBorda);
                 // pegador, numero, icone, nome
-                TextRenderer.DrawText(g, "\uE76F", fGlifoP, new Rectangle(x0 + E(6), y, E(20), hp), cFraco, TC);
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    float pr = Math.Max(1.6f, E(1.6f)), cx = x0 + E(16), cy = y + hp / 2f;
+                    using (var b = new SolidBrush(hovp || movendo ? cTexto : cFraco))
+                        for (int ix = 0; ix < 2; ix++)
+                            for (int iy = -1; iy <= 1; iy++)
+                                g.FillEllipse(b, cx + (ix == 0 ? -E(3) : E(3)) - pr, cy + iy * E(6) - pr, pr * 2, pr * 2);
+                    g.SmoothingMode = SmoothingMode.None;
+                }
                 var rn = new Rectangle(x0 + E(30), y + (hp - E(22)) / 2, E(22), E(22));
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                using (var b = new SolidBrush(l.Ordem == 0 ? cAcento : cHover)) g.FillEllipse(b, rn);
+                bool primeiro = l.Ordem == 0 && app.PrioridadeAuto;
+                using (var b = new SolidBrush(primeiro ? cAcento : cHover)) g.FillEllipse(b, rn);
                 g.SmoothingMode = SmoothingMode.None;
-                TextRenderer.DrawText(g, (l.Ordem + 1).ToString(), fPequena, rn, l.Ordem == 0 ? cTextoAcento : cTexto, TC);
+                TextRenderer.DrawText(g, (l.Ordem + 1).ToString(), fPequena, rn, primeiro ? cTextoAcento : cTexto, TC);
                 Color ct = l.Ativo ? cTexto : cFraco;
                 TextRenderer.DrawText(g, l.Glifo.ToString(), fGlifo, new Rectangle(x0 + E(60), y, E(28), hp), ct, TC);
                 string est = l.Padrao ? "em uso" : l.Ativo ? "conectado" : "desconectado";
@@ -7937,7 +7949,7 @@ class Configuracoes : Form
         base.OnMouseMove(e);
         if (arrastoL != null)
         {
-            if (!arrastandoL && Math.Abs(e.Y - arrastoY0) > E(6)) { arrastandoL = true; Capture = true; Cursor = Cursors.SizeNS; }
+            if (!arrastandoL && Math.Abs(e.Y - arrastoY0) > E(6)) { arrastandoL = true; Capture = true; Cursor = Cursors.SizeAll; }
             if (arrastandoL)
             {
                 int i = 0, para = 0;
@@ -7954,7 +7966,11 @@ class Configuracoes : Form
         var z = ZonaEm(e.Location);
         bool mudou = (z == null) != (sobre == null) || (z != null && (z.L != sobre.L || z.Pagina != sobre.Pagina || z.Teste != sobre.Teste));
         sobre = z;
-        if (mudou) { Cursor = z != null ? Cursors.Hand : Cursors.Default; Invalidate(); }
+        if (mudou)
+        {
+            Cursor = z == null ? Cursors.Default : (z.L != null && z.L.Tipo == L_PRIO && !z.Teste) ? Cursors.SizeAll : Cursors.Hand;
+            Invalidate();
+        }
     }
 
     protected override void OnMouseLeave(EventArgs e)
@@ -8008,7 +8024,7 @@ class Configuracoes : Form
             Invalidate();
             return;
         }
-        if (l.Tipo == L_PRIO && soltou) { soltou = false; return; }
+        if (l.Tipo == L_PRIO && (arrastandoL || soltou)) { soltou = false; return; }
         if (l.Tipo == L_PRIO && z.Teste)
         {
             if (testandoCfg != null) return;
