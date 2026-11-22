@@ -24,8 +24,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.6.1.0")]
-[assembly: AssemblyFileVersion("1.6.1.0")]
+[assembly: AssemblyVersion("1.7.0.0")]
+[assembly: AssemblyFileVersion("1.7.0.0")]
 
 static class Program
 {
@@ -2143,7 +2143,8 @@ class Painel : Form
 
     class Zona { public Rectangle R; public int Tipo; public Disp D; public GrupoApp G; public Perfil P; public int F; public string Id; }
     const int Z_RECOLHER = 10, Z_NOME_A = 11, Z_ESCONDIDOS = 12, Z_MOSTRAR = 13, Z_USAR = 14, Z_PC = 15, Z_TENTAR = 16, Z_LISTA_PERFIS = 17,
-              Z_PARTES = 18, Z_SLIDER_P = 19, Z_MUDO_P = 20;   // janelas de um app: setinha, barra e mudo de cada uma
+              Z_PARTES = 18, Z_SLIDER_P = 19, Z_MUDO_P = 20, Z_TESTE = 21, Z_PRIORIDADE = 22;
+    string testando;   // saida tocando o som de teste agora   // janelas de um app: setinha, barra e mudo de cada uma
     // apps com as janelas abertas no painel (saida|exe); nao e guardado: o painel abre sempre fechado
     readonly HashSet<string> partesAbertas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, float> partesAnim = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);   // 0..1 enquanto abre/fecha
@@ -2821,9 +2822,11 @@ class Painel : Form
         int y = pad - rolagem;
 
         // Cabecalho
-        var rTit = new Rectangle(pad + E(4), y, W - pad * 2 - E(40), E(32));
+        var rTit = new Rectangle(pad + E(4), y, W - pad * 2 - E(76), E(32));
         var rMenu = new Rectangle(W - pad - E(32), y, E(32), E(32));
+        var rPrio = new Rectangle(rMenu.X - E(36), y, E(32), E(32));
         Add(rMenu, Z_MENU, null, null, null);
+        Add(rPrio, Z_PRIORIDADE, null, null, null);
         if (g != null)
         {
             string sub = Alvo != null ? "  ·  " + Alvo.Nome : app.UsarPerfis && app.PerfilAtivo != null ? "  ·  " + app.PerfilAtivo : "";
@@ -2839,6 +2842,9 @@ class Painel : Form
                 TextRenderer.DrawText(g, sub, fNormal, new Rectangle(rTit.X + tw, rTit.Y, rTit.Width - tw, rTit.Height), cFraco, TF);
             if (Sobre(Z_MENU, null, null, null)) Fundo(g, rMenu, cHover, E(4));
             TextRenderer.DrawText(g, "\uE713", fGlifo, rMenu, cTexto, TC);
+            // prioridade das saidas: em destaque quando a troca automatica esta ligada
+            if (Sobre(Z_PRIORIDADE, null, null, null)) Fundo(g, rPrio, cHover, E(4));
+            TextRenderer.DrawText(g, "\uE8CB", fGlifo, rPrio, app.PrioridadeAuto ? cAcento : cTexto, TC);
         }
         y += E(40);
         // divisao sutil entre o titulo e o conteudo
@@ -3243,8 +3249,16 @@ class Painel : Form
                 // Linha 2: volume da SAIDA (barra mais grossa, numero em destaque)
                 int y2 = y + hLinha1;
                 var rMudo = new Rectangle(colIcone - E(17), y2 + E(1), E(34), E(34));
-                var rSl = new Rectangle(xTexto - E(10), y2, cw - (xTexto - x0) - E(44), hLinha2);
-                if (f >= 1f) { Add(rMudo, Z_MUDO_D, d, null, null); Add(rSl, Z_SLIDER_D, d, null, null); }
+                bool comTeste = d.Fluxo == 0;   // saidas: botao de som de teste logo abaixo da setinha
+                var rSl = new Rectangle(xTexto - E(10), y2, cw - (xTexto - x0) - E(44) - (comTeste ? E(34) : 0), hLinha2);
+                var rTeste = new Rectangle(rCh.X, y2 + E(1), rCh.Width, E(34));
+                if (f >= 1f) { Add(rMudo, Z_MUDO_D, d, null, null); Add(rSl, Z_SLIDER_D, d, null, null); if (comTeste) Add(rTeste, Z_TESTE, d, null, null); }
+                if (g != null && comTeste)
+                {
+                    bool tocandoEste = testando == d.Id;
+                    if (Sobre(Z_TESTE, d, null, null)) Fundo(g, rTeste, cHover, E(5));
+                    TextRenderer.DrawText(g, tocandoEste ? "\uE767" : "\uE768", fGlifoP, rTeste, tocandoEste ? cAcento : cFraco, TC);
+                }
                 if (g != null)
                 {
                     if (Sobre(Z_MUDO_D, d, null, null)) Fundo(g, rMudo, cHover, E(5));
@@ -3906,6 +3920,26 @@ class Painel : Form
             case Z_MENU:
                 app.AbrirConfiguracoes();
                 app.AfastarConfig(Bounds);
+                break;
+            case Z_PRIORIDADE:
+                app.AbrirConfiguracoes(5);
+                app.AfastarConfig(Bounds);
+                break;
+            case Z_TESTE:
+                {
+                    string id = z.D.Id;
+                    if (testando != null) break;
+                    testando = id; Invalidate();
+                    Action fim = () => { if (testando == id) { testando = null; Invalidate(); } };
+                    if (Alvo != null)
+                    {
+                        EnviarRemoto("teste|" + id, "teste\t" + id, false);
+                        var t = new Timer { Interval = 900 };
+                        t.Tick += (s2, e2) => { t.Stop(); t.Dispose(); fim(); };
+                        t.Start();
+                    }
+                    else SomTeste.Tocar(id, ok => { try { BeginInvoke(fim); } catch { } });
+                }
                 break;
             case Z_ESCONDIDOS:
                 vistaAlvo[z.F] = !vistaAlvo[z.F];
@@ -4852,6 +4886,111 @@ class Remoto
 }
 
 // =====================================================================
+//  Som de teste: um "plim" curto tocado so na saida escolhida
+// =====================================================================
+static class SomTeste
+{
+    [DllImport("winmm.dll")] static extern int waveOutGetNumDevs();
+    [DllImport("winmm.dll")] static extern int waveOutMessage(IntPtr h, uint msg, IntPtr p1, IntPtr p2);
+    [DllImport("winmm.dll")] static extern int waveOutOpen(out IntPtr h, IntPtr dev, ref WAVEFORMATEX f, IntPtr cb, IntPtr inst, uint flags);
+    [DllImport("winmm.dll")] static extern int waveOutPrepareHeader(IntPtr h, IntPtr hdr, int tam);
+    [DllImport("winmm.dll")] static extern int waveOutUnprepareHeader(IntPtr h, IntPtr hdr, int tam);
+    [DllImport("winmm.dll")] static extern int waveOutWrite(IntPtr h, IntPtr hdr, int tam);
+    [DllImport("winmm.dll")] static extern int waveOutReset(IntPtr h);
+    [DllImport("winmm.dll")] static extern int waveOutClose(IntPtr h);
+    [StructLayout(LayoutKind.Sequential)]
+    struct WAVEFORMATEX { public ushort wFormatTag, nChannels; public uint nSamplesPerSec, nAvgBytesPerSec; public ushort nBlockAlign, wBitsPerSample, cbSize; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct WAVEHDR { public IntPtr lpData; public uint dwBufferLength, dwBytesRecorded; public IntPtr dwUser; public uint dwFlags, dwLoops; public IntPtr lpNext, reserved; }
+
+    static volatile bool tocando;
+
+    // o indice do winmm que corresponde ao aparelho (id do Core Audio)
+    static int Indice(string id)
+    {
+        int n = waveOutGetNumDevs();
+        for (int i = 0; i < n; i++)
+        {
+            IntPtr pt = Marshal.AllocHGlobal(4);
+            try
+            {
+                Marshal.WriteInt32(pt, 0);
+                if (waveOutMessage(new IntPtr(i), 0x812 /*DRV_QUERYFUNCTIONINSTANCEIDSIZE*/, pt, IntPtr.Zero) != 0) continue;
+                int tam = Marshal.ReadInt32(pt);
+                if (tam <= 0 || tam > 4096) continue;
+                IntPtr buf = Marshal.AllocHGlobal(tam);
+                try
+                {
+                    if (waveOutMessage(new IntPtr(i), 0x811 /*DRV_QUERYFUNCTIONINSTANCEID*/, buf, new IntPtr(tam)) != 0) continue;
+                    string s = Marshal.PtrToStringUni(buf);
+                    if (string.Equals(s, id, StringComparison.OrdinalIgnoreCase)) return i;
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+            finally { Marshal.FreeHGlobal(pt); }
+        }
+        return -1;
+    }
+
+    // duas notas suaves (como um "plim"), ~0,6 s, estereo 48 kHz
+    static byte[] Plim()
+    {
+        const int taxa = 48000;
+        int n = (int)(taxa * 0.62);
+        var b = new byte[n * 4];
+        for (int i = 0; i < n; i++)
+        {
+            double t = i / (double)taxa, v = 0;
+            if (t < 0.62) { double tt = t; v += Math.Sin(2 * Math.PI * 880 * tt) * Math.Exp(-tt * 9) * Math.Min(1, tt / 0.004); }
+            if (t >= 0.13) { double tt = t - 0.13; v += Math.Sin(2 * Math.PI * 1318.5 * tt) * Math.Exp(-tt * 7) * Math.Min(1, tt / 0.004); }
+            short x = (short)(Math.Max(-1, Math.Min(1, v * 0.28)) * 32767);
+            b[i * 4] = (byte)x; b[i * 4 + 1] = (byte)(x >> 8); b[i * 4 + 2] = (byte)x; b[i * 4 + 3] = (byte)(x >> 8);
+        }
+        return b;
+    }
+
+    // toca em outra thread; fim e chamado quando acaba (true = tocou)
+    public static void Tocar(string id, Action<bool> fim)
+    {
+        if (tocando) { if (fim != null) fim(false); return; }
+        tocando = true;
+        new Thread(() =>
+        {
+            bool ok = false;
+            try { ok = Rodar(id); } catch { }
+            tocando = false;
+            if (fim != null) try { fim(ok); } catch { }
+        }) { IsBackground = true, Name = "Sintonia.Teste" }.Start();
+    }
+
+    static bool Rodar(string id)
+    {
+        int dev = Indice(id);
+        if (dev < 0) return false;
+        var f = new WAVEFORMATEX { wFormatTag = 1, nChannels = 2, nSamplesPerSec = 48000, wBitsPerSample = 16, nBlockAlign = 4, nAvgBytesPerSec = 192000 };
+        IntPtr h;
+        if (waveOutOpen(out h, new IntPtr(dev), ref f, IntPtr.Zero, IntPtr.Zero, 0) != 0) return false;
+        var pcm = Plim();
+        IntPtr dados = Marshal.AllocHGlobal(pcm.Length);
+        int tamH = Marshal.SizeOf(typeof(WAVEHDR));
+        IntPtr ph = Marshal.AllocHGlobal(tamH);
+        try
+        {
+            Marshal.Copy(pcm, 0, dados, pcm.Length);
+            Marshal.StructureToPtr(new WAVEHDR { lpData = dados, dwBufferLength = (uint)pcm.Length }, ph, false);
+            waveOutPrepareHeader(h, ph, tamH);
+            waveOutWrite(h, ph, tamH);
+            int ofs = (int)Marshal.OffsetOf(typeof(WAVEHDR), "dwFlags");
+            for (int i = 0; i < 60 && (Marshal.ReadInt32(ph, ofs) & 1 /*WHDR_DONE*/) == 0; i++) Thread.Sleep(50);
+            waveOutReset(h);
+            waveOutUnprepareHeader(h, ph, tamH);
+            return true;
+        }
+        finally { waveOutClose(h); Marshal.FreeHGlobal(dados); Marshal.FreeHGlobal(ph); }
+    }
+}
+
+// =====================================================================
 //  Atualizacao automatica (GitHub Releases), com assinatura digital
 //  - so aceita um .exe assinado pela chave de quem publica (a publica fica aqui no codigo)
 //  - nao manda nada sobre voce: so pergunta ao GitHub qual e a ultima versao
@@ -5040,6 +5179,13 @@ class App : ApplicationContext
     // ---- outros PCs (controle pela rede) ----
     public bool Controlador;                 // este PC controla outros (padrao: desligado)
     public bool AtualizarSozinho = true;
+    // prioridade: lista ordenada de aparelhos (saidas e microfones), incluindo os desconectados
+    public bool PrioridadeAuto;
+    public readonly List<string>[] Prioridade = { new List<string>(), new List<string>() };
+    public class Conhecido { public string Id, Nome; public int Fluxo, Forma; }
+    public readonly Dictionary<string, Conhecido> Conhecidos = new Dictionary<string, Conhecido>(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string>[] ultimosAtivos = { null, null };
+    readonly Timer tPrio = new Timer { Interval = 1500 };
     public string EstadoAtualizacao = "";     // texto para as Configuracoes
     Atualizador.Nova novaVersao; byte[] novaBin;
     readonly Timer tAtualizacao = new Timer { Interval = 90 * 1000 };   // 1a vez 90 s depois de abrir; depois a cada 12 h
@@ -5166,6 +5312,7 @@ class App : ApplicationContext
         vigia = new Vigia(
             tipo => Postar(() =>
             {
+                if (tipo == 1) { tPrio.Stop(); tPrio.Start(); }   // aparelho entrou/saiu: confere a prioridade (espera o Bluetooth assentar)
                 if (tipo != 3) { recarregarPainel = true; ultimoId = null; }
                 if (!tAtualizar.Enabled) tAtualizar.Start();
             }),
@@ -5180,6 +5327,7 @@ class App : ApplicationContext
         tIni.Tick += (s, e) =>
         {
             tIni.Stop(); tIni.Dispose();
+            ConferirPrioridade();
             foreach (var kv in Audio.Sessoes()) SessaoNova(kv.Key);
             if (!atOk[0] || !atOk[1] || !atOk[2]) RegistrarAtalhos(); // tenta de novo (ex.: copia antiga ainda fechando)
             AplicarFixar(FixarBandeja);
@@ -5196,6 +5344,8 @@ class App : ApplicationContext
         if (primeiraVez) SalvarConfig();
         // instalado na pasta de programas: aparece em Configuracoes > Aplicativos e no menu Iniciar
         if (Instalador.EstaInstalado) new Thread(Instalador.GarantirRegistro) { IsBackground = true, Priority = ThreadPriority.Lowest }.Start();
+
+        tPrio.Tick += (s, e) => { tPrio.Stop(); ConferirPrioridade(); };
 
         // atualizacao automatica
         try { Atualizador.Limpar(Application.ExecutablePath); } catch { }
@@ -5852,6 +6002,85 @@ class App : ApplicationContext
     }
     public bool ReceptorAtivo { get { return servidor != null && servidor.Ligado; } }
 
+    // =================== prioridade de saidas e microfones ===================
+    public void DefinirPrioridadeAuto(bool v)
+    {
+        PrioridadeAuto = v; SalvarConfig();
+        if (v) { ultimosAtivos[0] = ultimosAtivos[1] = null; ConferirPrioridade(); }
+        PainelMudou();
+    }
+
+    // guarda os aparelhos vistos (novos entram no fim da lista) e devolve os conectados agora
+    HashSet<string> AtualizarConhecidos(int fluxo)
+    {
+        var ativos = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ds = Audio.Listar(fluxo, false, false, null);
+        bool mudou = false, vazia = Prioridade[fluxo].Count == 0;
+        foreach (var d in ds)
+        {
+            ativos.Add(d.Id);
+            Conhecido k;
+            if (!Conhecidos.TryGetValue(d.Id, out k) || k.Nome != d.NomeOriginal || k.Forma != d.Forma)
+            { Conhecidos[d.Id] = new Conhecido { Id = d.Id, Nome = d.NomeOriginal, Fluxo = fluxo, Forma = d.Forma }; mudou = true; }
+            if (!Prioridade[fluxo].Contains(d.Id)) { Prioridade[fluxo].Add(d.Id); mudou = true; }
+        }
+        Audio.Liberar(ds);
+        if (vazia)
+        {
+            // primeira vez: a que esta em uso agora comeca em primeiro (nada muda ao ligar a prioridade)
+            string pad = Audio.PadraoId(fluxo);
+            int i = Prioridade[fluxo].FindIndex(x => Politica.Igual(x, pad));
+            if (i > 0) { var x0 = Prioridade[fluxo][i]; Prioridade[fluxo].RemoveAt(i); Prioridade[fluxo].Insert(0, x0); }
+        }
+        if (mudou) SalvarConfig();
+        return ativos;
+    }
+
+    // um aparelho entrou ou saiu: usa o primeiro da lista que estiver conectado.
+    // (so age quando o conjunto de aparelhos muda: uma troca feita a mao fica valendo ate la)
+    public void ConferirPrioridade()
+    {
+        for (int f = 0; f < 2; f++)
+        {
+            var ativos = AtualizarConhecidos(f);
+            var antes = ultimosAtivos[f];
+            ultimosAtivos[f] = ativos;
+            if (!PrioridadeAuto || (antes != null && antes.SetEquals(ativos))) continue;
+            string melhor = Prioridade[f].Find(id => ativos.Contains(id));
+            if (melhor == null || Politica.Igual(melhor, Audio.PadraoId(f))) continue;
+            Audio.DefinirPadrao(melhor);
+            Conhecido k = null; Conhecidos.TryGetValue(melhor, out k);
+            string nome = NomeConhecido(melhor);
+            Avisar(f == 0 ? Audio.Glifo(new Disp { Fluxo = 0, Forma = k != null ? k.Forma : 0 }) : '\uE720', "Usando " + nome);
+        }
+        AtualizarConfig();
+    }
+
+    public void MoverPrioridade(int fluxo, string id, int para)
+    {
+        var l = Prioridade[fluxo];
+        int de = l.IndexOf(id);
+        if (de < 0) return;
+        l.RemoveAt(de);
+        if (para > de) para--;
+        l.Insert(Math.Max(0, Math.Min(l.Count, para)), id);
+        SalvarConfig();
+        if (PrioridadeAuto) { ultimosAtivos[fluxo] = null; ConferirPrioridade(); }
+    }
+
+    public void EsquecerAparelho(string id)
+    {
+        Prioridade[0].Remove(id); Prioridade[1].Remove(id); Conhecidos.Remove(id);
+        SalvarConfig();
+    }
+
+    public string NomeConhecido(string id)
+    {
+        string n; Conhecido k;
+        if (Nomes.TryGetValue(id, out n)) return n;
+        return Conhecidos.TryGetValue(id, out k) ? k.Nome : "?";
+    }
+
     // =================== atualizacao ===================
     public void DefinirAtualizarSozinho(bool v)
     {
@@ -6178,6 +6407,14 @@ class App : ApplicationContext
                         Audio.DefinirPadrao(c[1]);
                         remCache = null;
                         PainelMudou();
+                        return "ok";
+                    }
+                case "teste":
+                    {
+                        var d = ListaRemota(false).Find(x => x.Id == c[1] && x.Fluxo == 0);
+                        if (d == null) return "nao";
+                        SomTeste.Tocar(d.Id, null);
+                        Atividade(null, Audio.Glifo(d), 3);
                         return "ok";
                     }
                 case "saida":
@@ -6583,6 +6820,18 @@ class App : ApplicationContext
                     case "fixar": FixarBandeja = v == "1"; break;
                     case "controlador": Controlador = v == "1"; break;
                     case "atualizar": AtualizarSozinho = v == "1"; break;
+                    case "prioridade_auto": PrioridadeAuto = v == "1"; break;
+                    case "prio0": case "prio1":
+                        { var lp = Prioridade[k[4] - '0']; lp.Clear(); foreach (var o in v.Split(';')) if (o.Length > 0 && !lp.Contains(o)) lp.Add(o); }
+                        break;
+                    case "conhecido":
+                        {
+                            var a = v.Split('|');
+                            int fl, fo;
+                            if (a.Length == 4 && int.TryParse(a[0], out fl) && int.TryParse(a[1], out fo) && (fl == 0 || fl == 1))
+                                Conhecidos[a[2]] = new Conhecido { Fluxo = fl, Forma = fo, Id = a[2], Nome = a[3] };
+                        }
+                        break;
                     case "receptor": receptorLigado = v == "1"; break;
                     case "id_pc": if (v.Length >= 16) MeuId = v; break;
                     case "par":
@@ -6692,6 +6941,9 @@ class App : ApplicationContext
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
             l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0)); l.Add("atualizar=" + (AtualizarSozinho ? 1 : 0));
+            l.Add("prioridade_auto=" + (PrioridadeAuto ? 1 : 0));
+            l.Add("prio0=" + string.Join(";", Prioridade[0])); l.Add("prio1=" + string.Join(";", Prioridade[1]));
+            foreach (var kc in Conhecidos.Values) l.Add("conhecido=" + kc.Fluxo + "|" + kc.Forma + "|" + kc.Id + "|" + kc.Nome.Replace("|", ""));
             if (MeuId != null) l.Add("id_pc=" + MeuId);
             lock (pares)
                 foreach (var pc in pares)
@@ -6907,8 +7159,8 @@ class Configuracoes : Form
     int pagina, rolagem, alturaConteudo;
     float navAtual = -1f;                       // 0 = barra lateral fechada (so icones), 1 = aberta
     readonly Timer tNav = new Timer { Interval = 15 };
-    static readonly string[] Paginas = { "Geral", "Perfis", "Atalhos", "Dispositivos", "Outros PCs" };
-    static readonly char[] GlifosPag = { '', '', '', '' , '' };
+    static readonly string[] Paginas = { "Geral", "Perfis", "Atalhos", "Dispositivos", "Outros PCs", "Prioridade" };
+    static readonly char[] GlifosPag = { '', '', '', '' , '' , '\uE8CB' };
     readonly List<Linha> linhas = new List<Linha>();
     readonly List<Zona> zonas = new List<Zona>();
     Zona sobre;
@@ -6922,9 +7174,14 @@ class Configuracoes : Form
         public Action<bool> Gravar;
         public Func<string> Valor;
         public Action<Rectangle> Clicar;
+        public string Id; public int Fluxo, Ordem; public bool Ativo, Padrao;   // L_PRIO
     }
-    class Zona { public Rectangle R; public int Pagina = -1; public Linha L; }
-    const int L_CAB = 0, L_CHAVE = 1, L_BOTAO = 2, L_NOTA = 3, L_GRUPO = 4;
+    class Zona { public Rectangle R; public int Pagina = -1; public Linha L; public bool Teste; }
+    const int L_CAB = 0, L_CHAVE = 1, L_BOTAO = 2, L_NOTA = 3, L_GRUPO = 4, L_PRIO = 5;
+    // arrastar na lista de prioridade
+    Linha arrastoL; int arrastoY0, arrastoPara = -1; bool arrastandoL, soltou;
+    readonly List<KeyValuePair<Rectangle, Linha>> prioRects = new List<KeyValuePair<Rectangle, Linha>>();
+    string testandoCfg;
     // perfis abertos na pagina Perfis (comeca so com o ativo aberto)
     readonly HashSet<Perfil> perfisAbertos = new HashSet<Perfil>();
     bool perfisIniciados;
@@ -7191,6 +7448,61 @@ class Configuracoes : Form
                 }
             }
         }
+        else if (pagina == 5)
+        {
+            Nota("Quando um aparelho conecta ou desconecta (ex.: o fone Bluetooth), o Sintonia passa a usar o primeiro da lista que estiver conectado. " +
+                 "Se você trocar à mão, ele respeita até um aparelho entrar ou sair. Arraste para mudar a ordem; ▶ toca um som de teste naquela saída.");
+            Chave("Trocar sozinho pela prioridade", "Vale para a saída e o microfone padrão", () => app.PrioridadeAuto, v => app.DefinirPrioridadeAuto(v));
+            foreach (var fluxo in new[] { 0, 1 })
+            {
+                Cab(fluxo == 0 ? "Saídas" : "Microfones");
+                var ativos = Audio.Listar(fluxo, false, false, null);
+                string pad = Audio.PadraoId(fluxo);
+                int ordem = 0;
+                foreach (var id0 in new List<string>(app.Prioridade[fluxo]))
+                {
+                    string id = id0;
+                    var d = ativos.Find(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase));
+                    App.Conhecido k; app.Conhecidos.TryGetValue(id, out k);
+                    int forma = d != null ? d.Forma : k != null ? k.Forma : 0;
+                    var l = new Linha
+                    {
+                        Tipo = L_PRIO, Id = id, Fluxo = fluxo, Ordem = ordem++, Ativo = d != null, Padrao = d != null && Politica.Igual(id, pad),
+                        Titulo = app.NomeConhecido(id), Glifo = Audio.Glifo(new Disp { Fluxo = fluxo, Forma = forma })
+                    };
+                    l.Clicar = r =>
+                    {
+                        var m = NovoMenu();
+                        if (l.Ativo)
+                        {
+                            var ren = new ToolStripMenuItem("Renomear…");
+                            string orig = k != null ? k.Nome : l.Titulo, atual = l.Titulo;
+                            ren.Click += (s, e) => BeginInvoke(new Action(() => { app.RenomearDispositivo(id, orig, atual); Montar(); Invalidate(); }));
+                            m.Items.Add(ren);
+                            if (!l.Padrao)
+                            {
+                                var usar = new ToolStripMenuItem("Usar agora");
+                                usar.Click += (s, e) => { Audio.DefinirPadrao(id); app.PainelMudou(); Montar(); Invalidate(); };
+                                m.Items.Add(usar);
+                            }
+                        }
+                        var topo = new ToolStripMenuItem("Colocar em primeiro") { Enabled = l.Ordem > 0 };
+                        topo.Click += (s, e) => { app.MoverPrioridade(fluxo, id, 0); Montar(); Invalidate(); };
+                        m.Items.Add(topo);
+                        if (!l.Ativo)
+                        {
+                            var esq = new ToolStripMenuItem("Esquecer este aparelho");
+                            esq.Click += (s, e) => { app.EsquecerAparelho(id); Montar(); Invalidate(); };
+                            m.Items.Add(esq);
+                        }
+                        MostrarMenu(m, r);
+                    };
+                    linhas.Add(l);
+                }
+                if (app.Prioridade[fluxo].Count == 0) Nota(fluxo == 0 ? "Nenhuma saída vista ainda." : "Nenhum microfone visto ainda.");
+                Audio.Liberar(ativos);
+            }
+        }
         else if (pagina == 4)
         {
             Nota("Controle o som de outro PC da sua casa (ex.: o notebook) pelo painel deste, e vice-versa. Os PCs se conectam só pela rede de casa, " +
@@ -7446,6 +7758,7 @@ class Configuracoes : Form
         y = E(20) - rolagem;
         TextRenderer.DrawText(g, Paginas[pagina], fTitulo, new Rectangle(x0, y, w, E(44)), cTexto, TF);
         y += E(60);
+        prioRects.Clear();
         foreach (var l in linhas)
         {
             if (l.Tipo == L_GRUPO)
@@ -7473,6 +7786,40 @@ class Configuracoes : Form
                 TextRenderer.DrawText(g, l.Titulo, fNormal, new Rectangle(x0 + E(2), y, w, tam.Height + E(4)), cFraco,
                     TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
                 y += tam.Height + E(16);
+                continue;
+            }
+            if (l.Tipo == L_PRIO)
+            {
+                int hp = E(52);
+                var rp = new Rectangle(x0, y, w, hp);
+                bool comTeste = l.Fluxo == 0 && l.Ativo;
+                var rT = new Rectangle(rp.Right - E(84), y + (hp - E(34)) / 2, E(34), E(34));
+                if (comTeste) zonas.Add(new Zona { R = rT, L = l, Teste = true });
+                zonas.Add(new Zona { R = rp, L = l });
+                prioRects.Add(new KeyValuePair<Rectangle, Linha>(rp, l));
+                bool hovp = sobre != null && sobre.L == l && !arrastandoL;
+                bool movendo = arrastandoL && arrastoL == l;
+                Fundo(g, rp, movendo ? cHover : hovp ? cHover : cCartao, E(6), cBorda);
+                // pegador, numero, icone, nome
+                TextRenderer.DrawText(g, "\uE76F", fGlifoP, new Rectangle(x0 + E(6), y, E(20), hp), cFraco, TC);
+                var rn = new Rectangle(x0 + E(30), y + (hp - E(22)) / 2, E(22), E(22));
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (var b = new SolidBrush(l.Ordem == 0 ? cAcento : cHover)) g.FillEllipse(b, rn);
+                g.SmoothingMode = SmoothingMode.None;
+                TextRenderer.DrawText(g, (l.Ordem + 1).ToString(), fPequena, rn, l.Ordem == 0 ? cTextoAcento : cTexto, TC);
+                Color ct = l.Ativo ? cTexto : cFraco;
+                TextRenderer.DrawText(g, l.Glifo.ToString(), fGlifo, new Rectangle(x0 + E(60), y, E(28), hp), ct, TC);
+                string est = l.Padrao ? "em uso" : l.Ativo ? "conectado" : "desconectado";
+                TextRenderer.DrawText(g, l.Titulo, fNormal, new Rectangle(x0 + E(98), y + E(8), w - E(300), E(20)), ct, TF);
+                TextRenderer.DrawText(g, est, fPequena, new Rectangle(x0 + E(98), y + E(28), w - E(300), E(16)), l.Padrao ? cAcento : cFraco, TF);
+                if (comTeste)
+                {
+                    bool tocandoEsta = testandoCfg == l.Id;
+                    if (sobre != null && sobre.Teste && sobre.L == l) Fundo(g, rT, ControlPaint.Light(cHover, 0.15f), E(5), null);
+                    TextRenderer.DrawText(g, tocandoEsta ? "\uE767" : "\uE768", fGlifoP, rT, tocandoEsta ? cAcento : cTexto, TC);
+                }
+                TextRenderer.DrawText(g, "\uE76C", fGlifoP, new Rectangle(rp.Right - E(40), y, E(24), hp), cFraco, TC);
+                y += hp + E(4);
                 continue;
             }
             // a explicacao quebra em mais linhas quando precisa (o cartao cresce junto)
@@ -7519,6 +7866,17 @@ class Configuracoes : Form
             }
             y += h + E(4);
         }
+        if (arrastandoL && arrastoPara >= 0)
+        {
+            // linha mostrando onde o aparelho vai ficar
+            var mesmos = prioRects.FindAll(kv => kv.Value.Fluxo == arrastoL.Fluxo);
+            if (mesmos.Count > 0)
+            {
+                int yl = arrastoPara < mesmos.Count ? mesmos[arrastoPara].Key.Top - E(3) : mesmos[mesmos.Count - 1].Key.Bottom + E(1);
+                var rr = mesmos[0].Key;
+                Fundo(g, new Rectangle(rr.X + E(8), yl, rr.Width - E(16), Math.Max(2, E(3))), cAcento, E(1.5f), null);
+            }
+        }
         alturaConteudo = y + rolagem + E(24);
         g.Clip = reg;
 
@@ -7552,11 +7910,49 @@ class Configuracoes : Form
         return null;
     }
 
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        soltou = false;
+        if (e.Button != MouseButtons.Left) return;
+        var z = ZonaEm(e.Location);
+        if (z != null && z.L != null && z.L.Tipo == L_PRIO && !z.Teste) { arrastoL = z.L; arrastoY0 = e.Y; arrastandoL = false; }
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (arrastoL != null && arrastandoL)
+        {
+            app.MoverPrioridade(arrastoL.Fluxo, arrastoL.Id, arrastoPara);
+            soltou = true;
+            Capture = false;
+            Montar(); Invalidate();
+        }
+        arrastoL = null; arrastandoL = false; arrastoPara = -1;
+    }
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (arrastoL != null)
+        {
+            if (!arrastandoL && Math.Abs(e.Y - arrastoY0) > E(6)) { arrastandoL = true; Capture = true; Cursor = Cursors.SizeNS; }
+            if (arrastandoL)
+            {
+                int i = 0, para = 0;
+                foreach (var kv in prioRects)
+                {
+                    if (kv.Value.Fluxo != arrastoL.Fluxo) continue;
+                    if (e.Y > kv.Key.Top + kv.Key.Height / 2) para = i + 1;
+                    i++;
+                }
+                if (para != arrastoPara) { arrastoPara = para; Invalidate(); }
+                return;
+            }
+        }
         var z = ZonaEm(e.Location);
-        bool mudou = (z == null) != (sobre == null) || (z != null && (z.L != sobre.L || z.Pagina != sobre.Pagina));
+        bool mudou = (z == null) != (sobre == null) || (z != null && (z.L != sobre.L || z.Pagina != sobre.Pagina || z.Teste != sobre.Teste));
         sobre = z;
         if (mudou) { Cursor = z != null ? Cursors.Hand : Cursors.Default; Invalidate(); }
     }
@@ -7612,7 +8008,16 @@ class Configuracoes : Form
             Invalidate();
             return;
         }
-        if ((l.Tipo == L_BOTAO || l.Tipo == L_GRUPO) && l.Clicar != null)
+        if (l.Tipo == L_PRIO && soltou) { soltou = false; return; }
+        if (l.Tipo == L_PRIO && z.Teste)
+        {
+            if (testandoCfg != null) return;
+            string id = l.Id;
+            testandoCfg = id; Invalidate();
+            SomTeste.Tocar(id, ok => { try { BeginInvoke(new Action(() => { testandoCfg = null; Invalidate(); })); } catch { } });
+            return;
+        }
+        if ((l.Tipo == L_BOTAO || l.Tipo == L_GRUPO || l.Tipo == L_PRIO) && l.Clicar != null)
         {
             l.Clicar(z.R);
             if (!IsDisposed) { Montar(); Invalidate(); }
