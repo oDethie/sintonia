@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.24.0")]
-[assembly: AssemblyFileVersion("1.9.24.0")]
+[assembly: AssemblyVersion("1.9.25.0")]
+[assembly: AssemblyFileVersion("1.9.25.0")]
 
 static class Program
 {
@@ -67,6 +67,7 @@ static class Program
         if (args.Length == 5 && args[0] == "--testemover") { TesteMover(args[1], args[2], args[3], args[4]); return; }
         if (args.Length == 2 && args[0] == "--testeopcoes") { App.TesteOpcoes(args[1]); return; }
         if (args.Length == 2 && args[0] == "--testerede") { TesteRede(args[1]); return; }
+        if (args.Length == 3 && args[0] == "--testebackup") { App.GravarBackup(args[1], args[2]); var nv = File.ReadAllLines(args[2]); if (App.BackupValido(nv)) App.MesclarBackup(args[1], nv); return; }
         if (args.Length == 2 && args[0] == "--testeuso") { Audio.DiagUso = true; var l = Audio.Listar(1, true, false, null); File.WriteAllText(args[1], App.EstadoTexto(l) + "\nassinatura=" + Audio.AssinaturaUso()); Audio.Liberar(l); return; }
         if (args.Length == 2 && args[0] == "--testeestado") { var l = Audio.Listar(0, true, true, null); File.WriteAllText(args[1], App.EstadoTexto(l)); Audio.Liberar(l); return; }
         if (args.Length == 1 && args[0] == "--apagar-identidade") { Rede.ApagarIdentidade(); return; }
@@ -8755,8 +8756,94 @@ class App : ApplicationContext
         return string.Join(";", l);
     }
 
+    // ================= Backup das configuracoes =================
+    // O arquivo leva tudo MENOS a identidade deste PC e os pareamentos (chaves secretas): ao restaurar, esses ficam como estao.
+    bool restaurando;   // enquanto reinicia depois de restaurar, nada pode salvar por cima
+    static bool LinhaDoPc(string l) { return l.StartsWith("id_pc=") || l.StartsWith("par=") || l.StartsWith("ultimo_pc="); }
+    const string CabBackup = "# Backup do Sintonia";
+
+    public static void GravarBackup(string ini, string arq)
+    {
+        var l = new List<string> { CabBackup + " " + Atualizador.Atual.ToString(3) + " - " + DateTime.Now.ToString("dd/MM/yyyy HH:mm") };
+        foreach (var x in File.ReadAllLines(ini)) if (!LinhaDoPc(x)) l.Add(x);
+        File.WriteAllLines(arq, l);
+    }
+    public static bool BackupValido(string[] novas)
+    {
+        if (novas.Length > 0 && novas[0].StartsWith(CabBackup)) return true;
+        foreach (var x in novas) if (x.StartsWith("tema=") || x.StartsWith("passo=")) return true;
+        return false;
+    }
+    // troca o ini pelo backup, mantendo a identidade e os pareamentos deste PC
+    public static void MesclarBackup(string ini, string[] novas)
+    {
+        var atuais = File.ReadAllLines(ini);
+        File.Copy(ini, ini + ".antes-de-restaurar", true);   // por garantia: a configuracao de antes fica guardada
+        var l = new List<string>();
+        foreach (var x in novas) if (!x.StartsWith("#") && !LinhaDoPc(x)) l.Add(x);
+        foreach (var x in atuais) if (LinhaDoPc(x)) l.Add(x);
+        File.WriteAllLines(ini, l);
+    }
+
+    public void SalvarBackup(IWin32Window dono)
+    {
+        using (var dlg = new SaveFileDialog
+        {
+            Title = "Salvar as configurações do Sintonia",
+            Filter = "Backup do Sintonia (*.ini)|*.ini",
+            FileName = "Sintonia backup " + DateTime.Now.ToString("yyyy-MM-dd") + ".ini",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+        })
+        {
+            if (dlg.ShowDialog(dono) != DialogResult.OK) return;
+            try
+            {
+                SalvarConfig();
+                GravarBackup(arqConfig, dlg.FileName);
+                MessageBox.Show(dono, "Pronto! As configurações foram salvas em:\n" + dlg.FileName, "Sintonia", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception e) { MessageBox.Show(dono, "Não deu para salvar (" + e.Message + ").", "Sintonia", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        }
+    }
+
+    public void RestaurarBackup(IWin32Window dono)
+    {
+        string arq;
+        using (var dlg = new OpenFileDialog
+        {
+            Title = "Restaurar as configurações do Sintonia",
+            Filter = "Backup do Sintonia (*.ini)|*.ini|Todos os arquivos|*.*",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+        })
+        {
+            if (dlg.ShowDialog(dono) != DialogResult.OK) return;
+            arq = dlg.FileName;
+        }
+        string[] novas;
+        try { novas = File.ReadAllLines(arq); }
+        catch (Exception e) { MessageBox.Show(dono, "Não deu para abrir o arquivo (" + e.Message + ").", "Sintonia", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+        // confere se e mesmo um backup do Sintonia (ou o Sintonia.ini de outro PC)
+        if (!BackupValido(novas)) { MessageBox.Show(dono, "Este arquivo não é um backup do Sintonia.", "Sintonia", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+        if (MessageBox.Show(dono, "Trocar as configurações de agora pelas do arquivo?\n\nOs pareamentos com outros PCs ficam como estão. O Sintonia vai reiniciar.",
+                "Sintonia", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        try
+        {
+            SalvarConfig();
+            MesclarBackup(arqConfig, novas);
+        }
+        catch (Exception e) { MessageBox.Show(dono, "Não deu para restaurar (" + e.Message + ").", "Sintonia", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+        // reinicia para ler tudo do zero (como na atualizacao)
+        restaurando = true;
+        if (servidor != null) servidor.Desligar();
+        vigia.Parar();
+        icone.Visible = false;
+        try { Process.Start(Application.ExecutablePath, "--atualizado"); } catch { }
+        Application.Exit();
+    }
+
     public void SalvarConfig()
     {
+        if (restaurando) return;
         try
         {
             var l = new List<string> {
@@ -9336,6 +9423,12 @@ class Configuracoes : Form
             Chave("Atalho no menu Iniciar", "Cria um atalho para achar o Sintonia pesquisando no menu Iniciar", () => App.TemAtalhoIniciar(), v => App.AlternarAtalhoIniciar());
             Botao("Desinstalar o Sintonia", "Remove o programa, o atalho, as configurações e devolve os apps à saída padrão (pede confirmação)", () => "",
                 r => { try { Process.Start(Application.ExecutablePath, "--desinstalar"); } catch { } });
+
+            Cab("Backup");
+            Botao("Salvar as configurações num arquivo", "Perfis, nomes, prioridades, regras dos apps e todas as opções. Os pareamentos com outros PCs não vão junto",
+                () => "", r => app.SalvarBackup(this), '\uE74E');
+            Botao("Restaurar de um arquivo", "Troca as configurações de agora pelas do arquivo e reinicia o Sintonia. Os pareamentos deste PC ficam como estão",
+                () => "", r => app.RestaurarBackup(this), '\uE777');
 
             Cab("Atualizações");
             Chave("Atualizar sozinho", "A cada 12 horas confere no GitHub se há versão nova. Se houver, baixa, confere a assinatura digital e se atualiza quando você não estiver jogando em tela cheia",
