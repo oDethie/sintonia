@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.25.0")]
-[assembly: AssemblyFileVersion("1.9.25.0")]
+[assembly: AssemblyVersion("1.9.26.0")]
+[assembly: AssemblyFileVersion("1.9.26.0")]
 
 static class Program
 {
@@ -994,13 +994,18 @@ static class Audio
     // Nome de cada janela: o titulo da janela do processo; senao o nome da sessao; senao "App 1", "App 2"
     static void NomearPartes(GrupoApp g)
     {
-        g.Partes.Sort((a, b) => a.Pid.CompareTo(b.Pid));
+        g.Partes.Sort((a, b) =>
+        {
+            int va = Processos.PapelDaParte(a.Pid, g.Exe) == "Chamada de voz" ? 0 : 1, vb = Processos.PapelDaParte(b.Pid, g.Exe) == "Chamada de voz" ? 0 : 1;
+            return va != vb ? va - vb : a.Pid.CompareTo(b.Pid);
+        });
         for (int i = 0; i < g.Partes.Count; i++)
         {
             var pt = g.Partes[i];
             string titulo = null;
             try { using (var pr = Process.GetProcessById((int)pt.Pid)) titulo = pr.MainWindowTitle; } catch { }
             if (!string.IsNullOrEmpty(titulo)) pt.Nome = titulo;
+            if (string.IsNullOrEmpty(pt.Nome)) pt.Nome = Processos.PapelDaParte(pt.Pid, g.Exe);
             if (string.IsNullOrEmpty(pt.Nome)) pt.Nome = g.Nome + " " + (i + 1);
             if (pt.Vols.Count == 0) pt.Mudo = false;
         }
@@ -1377,6 +1382,56 @@ static class Processos
 
     static readonly Dictionary<string, string> nomes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     static readonly Dictionary<string, Bitmap> icones = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
+
+    [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr h, int classe, IntPtr buf, int tam, out int usado);
+
+    // Linha de comando de um processo (Windows 8.1+, so leitura). Usada so para dar nome as partes de um app.
+    public static string LinhaDeComando(uint pid)
+    {
+        IntPtr h = OpenProcess(0x1000 /*QUERY_LIMITED_INFORMATION*/, false, pid);
+        if (h == IntPtr.Zero) return null;
+        IntPtr buf = IntPtr.Zero;
+        try
+        {
+            int tam = 8192, usado;
+            for (int tent = 0; tent < 2; tent++)
+            {
+                buf = Marshal.AllocHGlobal(tam);
+                int st = NtQueryInformationProcess(h, 60 /*ProcessCommandLineInformation*/, buf, tam, out usado);
+                if (st == 0)
+                {
+                    int len = Marshal.ReadInt16(buf) & 0xFFFF;               // UNICODE_STRING.Length (bytes)
+                    IntPtr txt = Marshal.ReadIntPtr(buf, IntPtr.Size);       // .Buffer (alinhado no tamanho do ponteiro)
+                    return txt == IntPtr.Zero ? null : Marshal.PtrToStringUni(txt, len / 2);
+                }
+                Marshal.FreeHGlobal(buf); buf = IntPtr.Zero;
+                if (usado <= tam || usado > (1 << 20)) return null;
+                tam = usado;
+            }
+            return null;
+        }
+        catch { return null; }
+        finally { if (buf != IntPtr.Zero) Marshal.FreeHGlobal(buf); CloseHandle(h); }
+    }
+
+    // O que cada parte de um app faz, quando da para saber pelo processo (apps Chromium/Electron, como o Discord).
+    // Guardado por pid: o papel de um processo nao muda.
+    static readonly Dictionary<uint, string> papeis = new Dictionary<uint, string>();
+    public static string PapelDaParte(uint pid, string exe)
+    {
+        string r;
+        lock (papeis) if (papeis.TryGetValue(pid, out r)) return r;
+        string cmd = LinhaDeComando(pid);
+        r = null;
+        if (cmd != null)
+        {
+            if (cmd.IndexOf("audio.mojom.AudioService", StringComparison.OrdinalIgnoreCase) >= 0) r = "Avisos e sons do app";
+            else if (exe != null && exe.StartsWith("discord", StringComparison.OrdinalIgnoreCase) &&
+                     cmd.IndexOf("--type=renderer", StringComparison.OrdinalIgnoreCase) >= 0) r = "Chamada de voz";   // o modulo de voz do Discord roda aqui
+        }
+        lock (papeis) { if (papeis.Count > 300) papeis.Clear(); papeis[pid] = r; }
+        return r;
+    }
 
     public static string Caminho(uint pid)
     {
@@ -2366,7 +2421,7 @@ class Painel : Form
 
     class Zona { public Rectangle R; public int Tipo; public Disp D; public GrupoApp G; public Perfil P; public int F; public string Id; }
     const int Z_RECOLHER = 10, Z_NOME_A = 11, Z_ESCONDIDOS = 12, Z_MOSTRAR = 13, Z_USAR = 14, Z_PC = 15, Z_TENTAR = 16, Z_LISTA_PERFIS = 17,
-              Z_PARTES = 18, Z_SLIDER_P = 19, Z_MUDO_P = 20, Z_TESTE = 21, Z_PRIORIDADE = 22, Z_USO = 23, Z_NOITE = 24, Z_ATUALIZAR_PC = 25;
+              Z_PARTES = 18, Z_SLIDER_P = 19, Z_MUDO_P = 20, Z_TESTE = 21, Z_PRIORIDADE = 22, Z_USO = 23, Z_NOITE = 24, Z_ATUALIZAR_PC = 25, Z_SETA_P = 26;
     string testando;   // saida tocando o som de teste agora   // janelas de um app: setinha, barra e mudo de cada uma
     // apps com as janelas abertas no painel (saida|exe); nao e guardado: o painel abre sempre fechado
     readonly HashSet<string> partesAbertas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2722,6 +2777,7 @@ class Painel : Form
 
     public void Mostrar()
     {
+        visMed.Clear();   // barrinhas: cada abertura comeca do estado real (som tocando ou nao)
         partesAbertas.Clear(); partesAnim.Clear();   // as janelas de cada app sempre comecam recolhidas
         var pt = Cursor.Position;
         var tela = Screen.FromPoint(pt);
@@ -2860,9 +2916,27 @@ class Painel : Form
     void Medidor(Graphics g, int x, int yCentro, Color fundo, string chave, IAudioMeterInformation m, List<IAudioMeterInformation> ms)
     {
         if (!app.MostrarSom || g == null || (m == null && (ms == null || ms.Count == 0) && (Alvo == null || semNiveis))) return;
-        var md = new Med { R = new Rectangle(x, yCentro - E(8), LarguraMed(), E(16)), Fundo = fundo, Chave = chave, M = m, Ms = ms };
+        var md = new Med { R = new Rectangle(x - 2, yCentro - E(8), LarguraMed() + 4, E(16)), /* 2 px de folga: a borda suavizada das barras nao deixa resto */ Fundo = fundo, Chave = chave, M = m, Ms = ms };
         meds.Add(md);
         DesenharMed(g, md);
+    }
+
+    // Barrinhas que somem sem som: quando tocou por ultimo e quanto aparecem agora (0 = escondidas, 1 = inteiras)
+    readonly Dictionary<string, DateTime> ultSom = new Dictionary<string, DateTime>();
+    readonly Dictionary<string, float> visMed = new Dictionary<string, float>();
+    const float SOM_MINIMO = 0.001f;   // -60 dB: abaixo disso e silencio de verdade
+    const double ATRASO_SOME = 3.0;   // segundos em silencio antes de sumir (evita piscar entre uma palavra e outra)
+    float AlvoMed(string chave)
+    {
+        if (!app.SomSome) return 1f;
+        DateTime t;
+        return ultSom.TryGetValue(chave, out t) && (DateTime.Now - t).TotalSeconds < ATRASO_SOME ? 1f : 0f;
+    }
+    float VisMed(string chave)
+    {
+        if (!app.SomSome) return 1f;
+        float v;
+        return visMed.TryGetValue(chave, out v) ? v : AlvoMed(chave);
     }
 
     void DesenharMed(Graphics g, Med md)
@@ -2870,16 +2944,20 @@ class Painel : Form
         float[] h;
         if (!historico.TryGetValue(md.Chave, out h)) h = new float[BARRAS];
         using (var b = new SolidBrush(md.Fundo)) g.FillRectangle(b, md.R);
+        float vis = VisMed(md.Chave);
+        if (vis <= 0.01f) return;
         bool silencio = true;
-        foreach (var v in h) if (v > 0.02f) silencio = false;
+        foreach (var v in h) if (v > SOM_MINIMO) silencio = false;
+        Color cor = silencio ? Color.FromArgb(120, cFraco) : cAcento;
+        cor = Color.FromArgb((int)(cor.A * vis), cor);
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var b = new SolidBrush(silencio ? Color.FromArgb(120, cFraco) : cAcento))
+        using (var b = new SolidBrush(cor))
             for (int i = 0; i < BARRAS; i++)
             {
                 // escala em decibeis (como medidores de audio): -50 dB = vazio, 0 dB = cheio
                 float nivel = h[i] <= 0.0003f ? 0f : Math.Max(0f, Math.Min(1f, 1f + 20f * (float)Math.Log10(h[i]) / 50f));
                 float alt = Math.Max(E(2), nivel * md.R.Height);
-                var r = new RectangleF(md.R.X + i * (E(3) + E(2)), md.R.Y + (md.R.Height - alt) / 2f, E(3), alt);
+                var r = new RectangleF(md.R.X + 2 + i * (E(3) + E(2)), md.R.Y + (md.R.Height - alt) / 2f, E(3), alt);
                 using (var pth = Desenho.Arred(r, E(1.5f))) g.FillPath(b, pth);
             }
         g.SmoothingMode = SmoothingMode.None;
@@ -2906,8 +2984,13 @@ class Painel : Form
                 catch { }
                 float[] h;
                 if (!historico.TryGetValue(md.Chave, out h)) { h = new float[BARRAS]; historico[md.Chave] = h; }
+                if (pico > SOM_MINIMO) ultSom[md.Chave] = DateTime.Now;   // qualquer som que se ouve (ate -60 dB) conta como tocando
+                // aparece rapido (~0,2 s) e some devagar (~0,5 s), so depois do atraso
+                float vAnt = VisMed(md.Chave), vAlvo = AlvoMed(md.Chave);
+                float vNova = vAlvo > vAnt ? Math.Min(vAlvo, vAnt + 0.2f) : Math.Max(vAlvo, vAnt - 0.08f);
+                visMed[md.Chave] = vNova;
                 bool tinha = false; foreach (var x in h) if (x > 0.001f) tinha = true;
-                if (!tinha && pico < 0.001f) continue;              // continua em silencio: nao redesenha
+                if (!tinha && pico < 0.001f && vNova == vAnt) continue;   // continua em silencio: nao redesenha
                 // cada barra mostra um instante (da mais nova a mais antiga), do centro para as pontas
                 Array.Copy(h, 0, h, 1, BARRAS - 1);
                 h[0] = Math.Max(pico, h[1] * 0.6f);
@@ -3214,6 +3297,10 @@ class Painel : Form
             bool hvT = sobre != null && sobre.Tipo == Z_MIDIA_RECOLHER;
             if (hvT) Fundo(g, rSeta, cHover, E(5));
             TextRenderer.DrawText(g, "Tocando agora", fNegrito, new Rectangle(pad + E(4), y, W - pad * 2 - E(40), E(22)), cTexto, TF);
+        }
+        if (g != null && hovMidia)   // seta e alfinete so aparecem com o mouse na secao (titulo ou cartao)
+        {
+            bool hvT = sobre != null && sobre.Tipo == Z_MIDIA_RECOLHER;
             // seta: embaixo -> sobe para o topo; em cima -> desce para o rodape
             bool hvM = sobre != null && sobre.Tipo == Z_MIDIA_MOVER;
             if (hvM) Fundo(g, rMover, cHover, E(5));
@@ -4517,7 +4604,13 @@ class Painel : Form
         bool multi = TemPartes(a);
         var rMais = new Rectangle(x0 + cw - E(40), y + E(2), E(32), E(24));
         if (movel) Add(rMais, Z_SAIDA_A, d, a, null);   // "..." = escolher a saida pela lista
-        // varias janelas: clique DUPLO na linha (fora da barra, do icone e do "...") abre/fecha a lista (OnMouseDoubleClick)
+        // nome (e a setinha logo depois dele quando o app tem varias partes)
+        bool comMed = a.Medidores.Count > 0 || (a.Remoto && !a.Sistema && !semNiveis);
+        int wSeta = multi ? E(22) : 0;
+        int nomeMax = rMais.Left - xTexto - E(22) - wSeta - (app.MostrarSom && comMed ? LarguraMed() + E(12) : 0);
+        int nw = Math.Min(nomeMax, TextRenderer.MeasureText(a.Nome, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width);
+        var rSeta = new Rectangle(xTexto + nw + E(2), y + E(4), E(22), E(22));
+        if (multi) Add(rSeta, Z_SETA_P, d, a, null);   // clique = abre/fecha as partes (o clique duplo na linha tambem)
         if (g == null) return;
 
         bool linhaSobre = sobre != null && sobre.G == a && arrastoApp == null;
@@ -4536,17 +4629,6 @@ class Painel : Form
                         g.FillRectangle(b, x0 + E(5) + j * E(4), y + h / 2 - E(5) + i * E(4), Math.Max(1, E(2)), Math.Max(1, E(2)));
         var rImg = new Rectangle(colIcone - ti / 2, rIc.Y + (rIc.Height - ti) / 2, ti, ti);
         Bitmap bmp = a.Caminho != null ? Processos.Icone(a.Caminho, ti) : a.Remoto ? IconeRemoto(a) : null;
-        if (multi)   // varias janelas: uma copia apagadinha atras do icone, como cartas empilhadas
-        {
-            var rTras = new Rectangle(rImg.X + E(7), rImg.Y - E(6), rImg.Width, rImg.Height);
-            if (bmp != null)
-                using (var ia = new System.Drawing.Imaging.ImageAttributes())
-                {
-                    ia.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = a.Mudo ? 0.18f : 0.42f });
-                    g.DrawImage(bmp, rTras, 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, ia);
-                }
-            else Desenho.Glifo(g, "", fGlifo, rTras, Color.FromArgb(90, cTexto), TC);
-        }
         if (bmp != null)
         {
             if (a.Mudo)
@@ -4561,6 +4643,14 @@ class Painel : Form
             else g.DrawImage(bmp, rImg);
         }
         else Desenho.Glifo(g, (a.Sistema ? '' : '').ToString(), fGlifo, rImg, a.Mudo ? cFraco : cTexto, TC);
+        if (a.Saida != null)   // saida escolhida so para este app: selo com alfinete no canto de cima do icone
+        {
+            var rp = new Rectangle(rImg.X - E(5), rImg.Y - E(5), E(14), E(14));
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var b = new SolidBrush(linhaSobre && movel ? cHover : cCartao)) g.FillEllipse(b, rp);
+            g.SmoothingMode = SmoothingMode.None;
+            Desenho.Glifo(g, "", fGlifoP, rp, cTexto, TC);
+        }
         if (a.Mudo)
         {
             var rb = new Rectangle(rImg.Right - E(11), rImg.Bottom - E(11), E(14), E(14));
@@ -4571,14 +4661,16 @@ class Painel : Form
         }
 
         // nome + alfinete quando o app tem uma saida so dele
-        bool comMed = a.Medidores.Count > 0 || (a.Remoto && !a.Sistema && !semNiveis);
-        int nomeMax = rMais.Left - xTexto - E(22) - (app.MostrarSom && comMed ? LarguraMed() + E(12) : 0);
-        int nw = Math.Min(nomeMax, TextRenderer.MeasureText(g, a.Nome, fNormal, Size.Empty, TextFormatFlags.NoPadding).Width);
         TextRenderer.DrawText(g, a.Nome, fNormal, new Rectangle(xTexto, y + E(3), nomeMax, E(24)), a.Ativo ? cTexto : cFraco, TF);
-        if (a.Saida != null)
-            Desenho.Glifo(g, "", fGlifoP, new Rectangle(xTexto + nw + E(6), y + E(3), E(14), E(24)), cAcento, TC);
+        if (multi)
+        {
+            bool sobreSeta = Sobre(Z_SETA_P, d, a, null);
+            if (sobreSeta) Fundo(g, rSeta, ControlPaint.Light(cHover, 0.1f), E(4));
+            Desenho.Glifo(g, (PartesAbertas(d, a) ? '\uE70E' : '\uE70D').ToString(), fGlifoP, rSeta, sobreSeta ? cTexto : cFraco, TC);
+            nw += wSeta;
+        }
         if (app.MostrarSom && comMed && !arrastado)
-            Medidor(g, xTexto + nw + (a.Saida != null ? E(26) : E(10)), y + E(3) + E(12), linhaSobre && movel ? cHover : cCartao,
+            Medidor(g, xTexto + nw + E(10), y + E(3) + E(12), linhaSobre && movel ? cHover : cCartao,
                 "a|" + d.Id + "|" + a.Exe, null, a.Medidores);
 
         // botao "..." discreto, so aparece com o mouse na linha
@@ -4855,9 +4947,12 @@ class Painel : Form
         Invalidate();
     }
 
+    bool hovMidia;   // mouse na secao "Tocando agora": mostra a seta e o alfinete do titulo
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        bool hm = rSecaoMidia.Contains(e.Location);
+        if (hm != hovMidia) { hovMidia = hm; Invalidate(); }
         if (arrastoMidia) { dxMidia = e.X - xMidia; Invalidate(); return; }
         if (arrastando != null) { DefinirValor(arrastando, e.X); return; }
         if (arrastoApp != null) { AtualizarArrasto(e.Location); return; }
@@ -4877,6 +4972,7 @@ class Painel : Form
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
+        if (hovMidia) { hovMidia = false; Invalidate(); }
         if (sobre != null && arrastando == null && arrastoApp == null) { sobre = null; Invalidate(); }
     }
 
@@ -5257,6 +5353,9 @@ class Painel : Form
                     if (app.Animacoes) Animar();
                     else { vista[z.F] = 0f; Montar(null); Posicionar(); Invalidate(); }
                 }
+                break;
+            case Z_SETA_P:
+                AlternarPartes(z.D, z.G);
                 break;
             case Z_PARTES:
                 break;   // clique simples no fundo da linha nao faz nada; o clique duplo abre/fecha (OnMouseDoubleClick)
@@ -6705,6 +6804,7 @@ class App : ApplicationContext
     public bool MidiaNoTopo;
     public int Mostrador = 2;          // mostrador do som no "Tocando agora": 0 nenhum, 1 barras de fundo, 2 barrinha lateral
     public bool PrecisaMedidor { get { return MostrarSom || (TocandoAgora && Mostrador != 0); } }           // "Tocando agora" em cima (depois dos PCs e do perfil) ou embaixo      // "Tocando agora" preso no rodape quando a lista rola     // com varias tocando, passa para a proxima sozinho a cada N s (0 = nao troca)
+    public bool SomSome = true;        // barrinhas somem (com atraso e fade) quando nada toca
     public bool UsoMic = true;         // mostra no cartao do microfone os apps que estao usando
     public bool BateriaMostrar = true; // bateria dos fones Bluetooth
     public int BateriaJeito = 1;       // 1 anel no icone, 2 porcentagem a direita
@@ -8633,6 +8733,7 @@ class App : ApplicationContext
                     case "tocando_troca": { int n; if (int.TryParse(v, out n) && n >= 0 && n <= 120) TrocaMidiaSeg = n; } break;
                     case "bateria_pc": MostrarBateria = v == "1"; break;
                     case "uso_mic": UsoMic = v == "1"; break;
+                    case "som_some": SomSome = v == "1"; break;
                     case "bateria_fones": { int n; if (int.TryParse(v, out n) && n >= 0 && n <= 2) { BateriaMostrar = n != 0; if (n > 0) BateriaJeito = n; } } break;
                     case "bateria_jeito": { int n; if (int.TryParse(v, out n) && n >= 1 && n <= 2) BateriaJeito = n; } break;
                     case "aviso_bateria": AvisoBateria = v == "1"; break;
@@ -8853,7 +8954,7 @@ class App : ApplicationContext
                 "animacoes=" + (Animacoes ? 1 : 0), "menu_lateral=" + (MenuLateralAberto ? 1 : 0), "adaptador=" + (MostrarAdaptador ? 1 : 0), "logo=" + (MostrarLogo ? 1 : 0), "nome_app=" + (MostrarNomeApp ? 1 : 0), "pausar_fone=" + string.Join(";", PausarAoTirarFone), "som=" + (MostrarSom ? 1 : 0), "fixar=" + (FixarBandeja ? 1 : 0), "ordem=" + string.Join(";", Ordem),
                 "passo=" + Passo, "altura_max=" + AlturaMax, "tema=" + tema, "perfil_ativo=" + (PerfilAtivo ?? "") };
             for (int i = 0; i < 3; i++) l.Add("atalho" + i + "=" + AtMod[i] + "," + AtVk[i]);
-            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("tocando_topo=" + (MidiaNoTopo ? 1 : 0)); l.Add("tocando_mostrador=" + Mostrador); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("uso_mic=" + (UsoMic ? 1 : 0)); l.Add("bateria_fones=" + BateriaModo); l.Add("bateria_jeito=" + BateriaJeito); l.Add("aviso_bateria=" + (AvisoBateria ? 1 : 0));
+            l.Add("lembrar_pc=" + (LembrarPc ? 1 : 0)); l.Add("tocando=" + (TocandoAgora ? 1 : 0)); l.Add("tocando_troca=" + TrocaMidiaSeg); l.Add("tocando_fixo=" + (MidiaFixo ? 1 : 0)); l.Add("tocando_topo=" + (MidiaNoTopo ? 1 : 0)); l.Add("tocando_mostrador=" + Mostrador); l.Add("bateria_pc=" + (MostrarBateria ? 1 : 0)); l.Add("uso_mic=" + (UsoMic ? 1 : 0)); l.Add("som_some=" + (SomSome ? 1 : 0)); l.Add("bateria_fones=" + BateriaModo); l.Add("bateria_jeito=" + BateriaJeito); l.Add("aviso_bateria=" + (AvisoBateria ? 1 : 0));
             l.Add("noite=" + (Noite ? 1 : 0)); l.Add("noite_estouro=" + (NoiteEstouro ? 1 : 0)); l.Add("noite_max=" + NoiteMax); l.Add("noite_horas=" + NoiteIni + "-" + NoiteFim); l.Add("ultimo_pc=" + (UltimoPc ?? ""));
             l.Add("controlador=" + (Controlador ? 1 : 0)); l.Add("receptor=" + (receptorLigado ? 1 : 0)); l.Add("atualizar=" + (AtualizarSozinho ? 1 : 0));
             l.Add("prioridade_auto=" + (PrioridadeAuto ? 1 : 0));
@@ -9299,6 +9400,11 @@ class Configuracoes : Form
             Chave("Mostrar o nome \"Sintonia\" no topo do painel", "Desligado, o topo mostra só o logo e o nome do outro PC ou do perfil ativo", () => app.MostrarNomeApp, v => app.MostrarNomeApp = v);
             Chave("Mostrar o som tocando", "Barrinhas animadas ao lado de cada saída e app, conforme o som que está tocando. Só funciona com o painel aberto",
                 () => app.MostrarSom, v => app.DefinirSom(v));
+            sub = true;
+            if (app.MostrarSom)
+                Chave("Esconder quando não tem som", "As barrinhas somem devagar depois de uns segundos em silêncio e voltam assim que algo toca",
+                    () => app.SomSome, v => { app.SomSome = v; app.SalvarConfig(); app.PainelMudou(); });
+            sub = false;
             Chave("Tocando agora", "Cartão no fim do painel com a música ou vídeo que está tocando (Spotify, YouTube…) e os botões anterior, tocar/pausar e próxima. Também do outro PC",
                 () => app.TocandoAgora, v => { app.TocandoAgora = v; app.SalvarConfig(); app.MedidorMudou(); });
             sub = true;

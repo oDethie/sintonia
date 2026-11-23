@@ -20,7 +20,7 @@ O controle de volume do Windows esconde o que mais importa: trocar a saída (fon
 - **Painel na bandeja** com todas as saídas e microfones, cada um com volume e mudo.
 - **Alerta de volume alto** nos fones: acima de 70% a barra fica vermelha e o cartão ganha uma faixa vermelha na lateral enquanto estiver alto (liga/desliga em qualquer saída pelo clique direito).
 - **Volume e mudo de cada app**, agrupados na saída onde o app está tocando. O volume que você escolhe para um app é **lembrado**: se o Windows "esquecer" (ex.: o WhatsApp volta a 100% depois de atualizar ou reiniciar), o Sintonia devolve o seu volume quando o app volta a tocar.
-- **Volume de cada janela:** quando um app está aberto mais de uma vez com som (ex.: dois players), o ícone dele aparece empilhado; com um clique duplo na linha dele, cada janela aparece logo abaixo, com volume e mudo próprios. Funciona também controlando outro PC (os dois precisam estar na 1.6.1 ou mais nova).
+- **Volume de cada janela:** quando um app está aberto mais de uma vez com som (ex.: dois players), aparece uma setinha ao lado do nome; um clique nela (ou um clique duplo na linha) mostra cada janela logo abaixo (no Discord, com nome: "Chamada de voz" e "Avisos e sons do app"), com volume e mudo próprios. Funciona também controlando outro PC (os dois precisam estar na 1.6.1 ou mais nova).
 - **Saída de cada app:** arraste o app para outra saída, ou use o **⋯** / clique direito no app. A escolha é **garantida**: se o Windows "esquecer", o Sintonia coloca o app de volta na saída certa.
 - **Usar como padrão** com um botão próprio (sem trocar por engano). A saída padrão tem uma barrinha discreta na lateral.
 - **Organize do seu jeito:** arraste as saídas para mudar a ordem, recolha/expanda com a setinha, renomeie ("Fone", "Caixa", "Monitor") e esconda o que não usa (o olhinho mostra os escondidos).
@@ -34,7 +34,7 @@ O controle de volume do Windows esconde o que mais importa: trocar a saída (fon
 - **Som de teste:** o ▶ abaixo da setinha de cada saída toca um "plim" curto só naquele aparelho (funciona também no controle de outro PC).
 - **Atalhos de teclado** configuráveis (vêm vazios; escolha os seus): abrir o painel, próxima saída, mudo geral e um por perfil.
 - **Aviso na tela** discreto ao usar os atalhos (não aparece por cima de jogos em tela cheia).
-- **Som tocando** (opcional): barrinhas animadas ao lado de cada saída e app mostram o som que está tocando, só com o painel aberto.
+- **Som tocando** (opcional): barrinhas animadas ao lado de cada saída e app mostram o som que está tocando, só com o painel aberto. Sem som, elas somem devagar depois de uns 3 segundos e voltam assim que algo toca (desligável).
 - **Controlar outro PC da casa** (opcional, novo na 1.1): pareie o PC e o notebook com um código e mude o som de um pelo painel do outro. Veja [Outros PCs](#outros-pcs).
 - **Atualiza sozinho** (opcional, vem ligado): confere no GitHub a cada 12 h, baixa a versão nova, confere a **assinatura digital** e se atualiza quando você não está jogando em tela cheia. Veja [Atualizações](#atualizações).
 - **Tema claro/escuro** que segue o Windows, cantos arredondados, animações suaves (opcionais).
