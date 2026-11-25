@@ -25,8 +25,8 @@ using Timer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("Sintonia")]
 [assembly: AssemblyDescription("Saidas de som, volume por app e perfis")]
 [assembly: AssemblyCopyright("Licença MIT")]
-[assembly: AssemblyVersion("1.9.26.0")]
-[assembly: AssemblyFileVersion("1.9.26.0")]
+[assembly: AssemblyVersion("1.9.27.0")]
+[assembly: AssemblyFileVersion("1.9.27.0")]
 
 static class Program
 {
@@ -919,6 +919,11 @@ static class Audio
                 uint pid; s.GetProcessId(out pid);
                 bool sis = s.IsSystemSoundsSession() == 0;
                 string caminho = sis ? null : Processos.Caminho(pid);
+                if (caminho != null && Path.GetFileName(caminho).Equals("msedgewebview2.exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    string dono = Processos.DonoWebView(pid);
+                    if (dono != null) caminho = dono;
+                }
                 if (st == 2 || (!inativos && st == 0) || (!sis && caminho == null)) { Soltar(s); continue; }
                 if (pid == MeuPid) { Soltar(s); continue; }   // o proprio Sintonia (som de teste) nao aparece na lista
                 string chave = sis ? "*sistema" : caminho.ToLowerInvariant();
@@ -1430,6 +1435,37 @@ static class Processos
                      cmd.IndexOf("--type=renderer", StringComparison.OrdinalIgnoreCase) >= 0) r = "Chamada de voz";   // o modulo de voz do Discord roda aqui
         }
         lock (papeis) { if (papeis.Count > 300) papeis.Clear(); papeis[pid] = r; }
+        return r;
+    }
+
+    // Apps feitos com o WebView2 (WhatsApp, Teams e Outlook novos...): o som sai de um processo "msedgewebview2.exe"
+    // que diz na linha de comando qual app o abriu (--webview-exe-name=WhatsApp.Root.exe). Devolve o caminho desse app.
+    static readonly Dictionary<uint, string> donos = new Dictionary<uint, string>();
+    public static string DonoWebView(uint pid)
+    {
+        string r;
+        lock (donos) if (donos.TryGetValue(pid, out r)) return r;
+        r = null;
+        string cmd = LinhaDeComando(pid);
+        int i = cmd == null ? -1 : cmd.IndexOf("--webview-exe-name=", StringComparison.OrdinalIgnoreCase);
+        if (i >= 0)
+        {
+            string resto = cmd.Substring(i + 19).TrimStart('"');
+            int fim = resto.IndexOfAny(new[] { '"', ' ' });
+            string nome = fim < 0 ? resto : resto.Substring(0, fim);
+            try
+            {
+                foreach (var pr in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(nome)))
+                    using (pr)
+                    {
+                        if (r != null) continue;
+                        string c = Caminho((uint)pr.Id);
+                        if (c != null && Path.GetFileName(c).Equals(nome, StringComparison.OrdinalIgnoreCase)) r = c;
+                    }
+            }
+            catch { }
+        }
+        lock (donos) { if (donos.Count > 300) donos.Clear(); donos[pid] = r; }
         return r;
     }
 
